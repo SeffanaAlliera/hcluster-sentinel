@@ -6,7 +6,7 @@
 
 create type public.node_status    as enum ('online', 'offline', 'degraded', 'unknown');
 create type public.health_status  as enum ('operational', 'degraded', 'down', 'unknown');
-create type public.check_type     as enum ('http', 'tcp');
+create type public.check_type     as enum ('http', 'tcp', 'dns');
 create type public.incident_kind  as enum ('node_offline', 'service_down', 'prometheus_unavailable', 'metrics_failure');
 
 -- Dashboard administrators. Rows reference Supabase Auth users.
@@ -103,10 +103,11 @@ create index service_checks_ts_idx on public.service_checks (ts);
 create table public.metrics (
   node_id uuid not null references public.nodes (id) on delete cascade,
   name    text not null check (name ~ '^[a-z][a-z0-9_]{0,63}$'),
+  label   text not null default '' check (char_length(label) <= 64),   -- '' = node-wide; else mountpoint / interface name
   ts      timestamptz not null,
   value   double precision not null,
   source  text not null default 'prometheus' check (source in ('prometheus','local')),
-  primary key (node_id, name, ts)
+  primary key (node_id, name, label, ts)
 );
 create index metrics_ts_idx on public.metrics (ts);
 
@@ -114,10 +115,11 @@ create index metrics_ts_idx on public.metrics (ts);
 create table public.node_latest_metrics (
   node_id uuid not null references public.nodes (id) on delete cascade,
   name    text not null,
+  label   text not null default '',
   value   double precision not null,
   source  text not null,
   ts      timestamptz not null,
-  primary key (node_id, name)
+  primary key (node_id, name, label)
 );
 
 create table public.incidents (

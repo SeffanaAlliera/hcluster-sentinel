@@ -118,6 +118,12 @@ describe('real Python agent -> route -> Postgres, incl. failure simulation', () 
     expect(svc).toEqual(expect.arrayContaining([{ key: 'web', status: 'operational' }, { key: 'closed', status: 'down' }]));
     expect(Number(((await ctx.db.query(`select count(*) c from public.metrics where source='local'`)).rows[0] as { c: string }).c)).toBeGreaterThan(2);
 
+    // multi-drive detection + per-NIC + labels survive the full path
+    const disks = (await ctx.db.query(`select label, value from public.node_latest_metrics where name='disk_percent' order by label`)).rows as { label: string; value: number }[];
+    expect(disks.length).toBeGreaterThan(0);
+    expect(disks.every((d) => d.label.startsWith('/'))).toBe(true);        // mountpoint labels
+    expect(disks.map((d) => d.label)).toContain('/');
+
     // simulate node failure: heartbeats stop
     await ctx.db.query(`update public.nodes set last_heartbeat_at = now() - interval '10 minutes' where id=$1`, [nodeId]);
     await ctx.client.rpc('evaluate_nodes');

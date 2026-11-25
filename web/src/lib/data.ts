@@ -2,10 +2,10 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { adminClient } from '@/lib/supabase/admin';
 import { RANGES, type RangeKey } from '@/lib/validation';
+import { seriesKey, type LatestRow } from '@/lib/metrics';
 import { effectiveNodeStatus, effectiveServiceStatus, type IncidentRow, type NodeRow, type NodeStatus, type ServiceRow } from '@/lib/status';
 
-export type LatestMap = Record<string, Record<string, { value: number; source: string; ts: string }>>;
-export interface NodeView extends NodeRow { effective: NodeStatus; services_ok: number; services_total: number; latest: LatestMap[string] }
+export interface NodeView extends NodeRow { effective: NodeStatus; services_ok: number; services_total: number; latest: LatestRow[] }
 
 /** Offline detection is also run lazily so incidents exist even without pg_cron. Never throws. */
 export async function lazyEvaluate() {
@@ -16,16 +16,16 @@ export async function listNodes(sb: SupabaseClient): Promise<NodeView[]> {
   const [nodes, services, latest] = await Promise.all([
     sb.from('nodes').select('*').order('display_name'),
     sb.from('services').select('id,node_id,status,enabled'),
-    sb.from('node_latest_metrics').select('node_id,name,value,source,ts'),
+    sb.from('node_latest_metrics').select('node_id,name,label,value,source,ts'),
   ]);
   if (nodes.error) throw nodes.error;
-  const lm: LatestMap = {};
-  for (const r of latest.data ?? []) (lm[r.node_id] ??= {})[r.name] = { value: r.value, source: r.source, ts: r.ts };
+  const lm: Record<string, LatestRow[]> = {};
+  for (const r of latest.data ?? []) (lm[r.node_id] ??= []).push({ name: r.name, label: r.label, value: r.value, source: r.source, ts: r.ts });
   return (nodes.data as NodeRow[]).map((n) => {
     const eff = effectiveNodeStatus(n);
     const svcs = (services.data ?? []).filter((s) => s.node_id === n.id && s.enabled);
     return {
-      ...n, effective: eff, latest: lm[n.id] ?? {},
+      ...n, effective: eff, latest: lm[n.id] ?? [],
       services_total: svcs.length,
       services_ok: svcs.filter((s) => effectiveServiceStatus(s, eff) === 'operational').length,
     };
@@ -69,16 +69,21 @@ export async function overview(sb: SupabaseClient) {
   };
 }
 
-export const SERIES_METRICS = ['cpu_percent', 'mem_percent', 'disk_percent', 'net_rx_bytes_per_sec', 'net_tx_bytes_per_sec'] as const;
+export const SERIES_METRICS = ['cpu_percent', 'cpu_temp_celsius', 'mem_percent', 'disk_percent', 'net_rx_bytes_per_sec', 'net_tx_bytes_per_sec'] as const;
+const PAGE = 1000;   // PostgREST returns at most 1000 rows per request; labeled series can exceed that on 7d ranges
 
 export async function metricSeries(sb: SupabaseClient, nodeId: string, range: RangeKey) {
   const { seconds, bucket } = RANGES[range];
   const to = new Date(); const from = new Date(to.getTime() - seconds * 1000);
-  const { data, error } = await sb.rpc('metric_series', {
-    p_node_id: nodeId, p_names: [...SERIES_METRICS], p_from: from.toISOString(), p_to: to.toISOString(), p_bucket_seconds: bucket,
-  }).limit(1000);
-  if (error) throw error;
   const series: Record<string, [number, number][]> = {};
-  for (const r of (data ?? []) as { bucket: string; name: string; value: number }[]) (series[r.name] ??= []).push([Date.parse(r.bucket), r.value]);
+  for (let page = 0; page < 10; page++) {
+    const { data, error } = await sb.rpc('metric_series', {
+      p_node_id: nodeId, p_names: [...SERIES_METRICS], p_from: from.toISOString(), p_to: to.toISOString(), p_bucket_seconds: bucket,
+    }).range(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as { bucket: string; name: string; label: string; value: number }[];
+    for (const r of rows) (series[seriesKey(r.name, r.label)] ??= []).push([Date.parse(r.bucket), r.value]);
+    if (rows.length < PAGE) break;
+  }
   return { range, from: from.toISOString(), to: to.toISOString(), bucket_seconds: bucket, series };
 }

@@ -173,17 +173,17 @@ begin
 
   -- metrics -----------------------------------------------------------
   if v_mr is not null then
-    insert into public.metrics (node_id, name, ts, value, source)
-    select p_node_id, e->>'name', v_ts, (e->>'value')::double precision, coalesce(e->>'source', 'prometheus')
+    insert into public.metrics (node_id, name, label, ts, value, source)
+    select p_node_id, e->>'name', coalesce(left(e->>'label', 64), ''), v_ts, (e->>'value')::double precision, coalesce(e->>'source', 'prometheus')
       from jsonb_array_elements(coalesce(v_mr->'values', '[]'::jsonb)) e
      where e->>'value' is not null
     on conflict do nothing;
 
-    insert into public.node_latest_metrics as l (node_id, name, value, source, ts)
-    select p_node_id, e->>'name', (e->>'value')::double precision, coalesce(e->>'source', 'prometheus'), v_ts
+    insert into public.node_latest_metrics as l (node_id, name, label, value, source, ts)
+    select p_node_id, e->>'name', coalesce(left(e->>'label', 64), ''), (e->>'value')::double precision, coalesce(e->>'source', 'prometheus'), v_ts
       from jsonb_array_elements(coalesce(v_mr->'values', '[]'::jsonb)) e
      where e->>'value' is not null
-    on conflict (node_id, name) do update
+    on conflict (node_id, name, label) do update
       set value = excluded.value, source = excluded.source, ts = excluded.ts
       where excluded.ts >= l.ts;
 
@@ -310,15 +310,15 @@ end $$;
 -- ---------- dashboard time series (RLS applies: SECURITY INVOKER) ----------
 create or replace function public.metric_series(
   p_node_id uuid, p_names text[], p_from timestamptz, p_to timestamptz, p_bucket_seconds integer)
-returns table (bucket timestamptz, name text, value double precision)
+returns table (bucket timestamptz, name text, label text, value double precision)
 language sql stable security invoker set search_path = public, pg_temp
 as $$
   select date_bin(make_interval(secs => greatest(p_bucket_seconds, 10)), m.ts, timestamptz '2000-01-01 00:00:00+00') as bucket,
-         m.name, avg(m.value)::double precision
+         m.name, m.label, avg(m.value)::double precision
     from public.metrics m
    where m.node_id = p_node_id and m.name = any (p_names) and m.ts >= p_from and m.ts < p_to
-   group by 1, 2
-   order by 1
+   group by 1, 2, 3
+   order by 1, 2, 3
 $$;
 
 -- ---------- privileges --------------------------------------------------

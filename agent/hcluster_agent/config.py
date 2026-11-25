@@ -28,7 +28,7 @@ class ConfigError(Exception):
 class ServiceCheck:
     key: str
     name: str
-    type: str                      # http | tcp
+    type: str                      # http | tcp | dns
     enabled: bool = True
     url: str | None = None         # http
     host: str | None = None        # tcp
@@ -41,17 +41,24 @@ class ServiceCheck:
     verify_tls: bool = True
     retries: int = 1
     report_target: bool = True
+    query_name: str = "example.com"  # dns
 
     def target(self) -> str:
-        return self.url if self.type == "http" else f"{self.host}:{self.port}"
+        if self.type == "http":
+            return self.url or ""
+        if self.type == "dns":
+            return f"{self.host}:{self.port} (query {self.query_name})"
+        return f"{self.host}:{self.port}"
 
 
 @dataclass
 class PromQuery:
     name: str
     expr: str
-    reduce: str = "first"          # first | sum | avg | max | min
+    reduce: str = "first"          # first | sum | avg | max | min (ignored with label_by)
     enabled: bool = True
+    sum_total: bool = False        # with label_by: also emit the sum of all series as the node-wide (label '') value
+    label_by: str | None = None    # keep every series, labelled by this Prometheus label (e.g. mountpoint, device)
 
 
 @dataclass
@@ -76,7 +83,8 @@ class Config:
     state_dir: str
     local_fallback: bool
     net_exclude_prefixes: list[str]
-    disk_mountpoint: str
+    disk_mountpoints: list[str]
+    disk_exclude_prefixes: list[str] | None
     prometheus: PrometheusConfig
     services: list[ServiceCheck]
     log_level: str = "INFO"
@@ -139,8 +147,8 @@ def parse_services(raw: list[dict] | None) -> list[ServiceCheck]:
             raise ConfigError(f"{ctx}: duplicate key '{key}'")
         seen.add(key)
         typ = str(_req(s, "type", ctx)).lower()
-        if typ not in ("http", "tcp"):
-            raise ConfigError(f"{ctx}: type must be http or tcp")
+        if typ not in ("http", "tcp", "dns"):
+            raise ConfigError(f"{ctx}: type must be http, tcp or dns")
         sc = ServiceCheck(
             key=key, name=str(s.get("name") or key), type=typ,
             enabled=bool(s.get("enabled", True)),
@@ -160,7 +168,9 @@ def parse_services(raw: list[dict] | None) -> list[ServiceCheck]:
             sc.expected_status = parse_status_ranges(s.get("expected_status"))
         else:
             sc.host = str(s.get("host", "127.0.0.1"))
-            sc.port = int(_req(s, "port", ctx))
+            sc.port = int(s.get("port", 53)) if typ == "dns" else int(_req(s, "port", ctx))
+            if typ == "dns":
+                sc.query_name = str(s.get("query_name", "example.com"))
             if not 1 <= sc.port <= 65535:
                 raise ConfigError(f"{ctx}: port out of range")
         if sc.interval_seconds < 5 or sc.timeout_seconds <= 0 or sc.retries < 0:
@@ -192,7 +202,11 @@ def parse_prometheus(raw: dict | None) -> PrometheusConfig:
         red = str(q.get("reduce", "first")).lower()
         if red not in ("first", "sum", "avg", "max", "min"):
             raise ConfigError(f"{ctx}: reduce must be first|sum|avg|max|min")
-        pc.queries.append(PromQuery(name=name, expr=str(_req(q, "expr", ctx)), reduce=red, enabled=bool(q.get("enabled", True))))
+        lb = q.get("label_by")
+        if lb is not None and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(lb)):
+            raise ConfigError(f"{ctx}: label_by must be a Prometheus label name")
+        pc.queries.append(PromQuery(name=name, expr=str(_req(q, "expr", ctx)), reduce=red, enabled=bool(q.get("enabled", True)),
+                                    label_by=str(lb) if lb else None, sum_total=bool(q.get("sum_total", False))))
     return pc
 
 
@@ -234,7 +248,8 @@ def load_config(path: str, env: dict[str, str] | None = None) -> Config:
         state_dir=str(raw.get("state_dir", "/var/lib/hcluster-agent")),
         local_fallback=bool(loc.get("fallback", True)),
         net_exclude_prefixes=list(loc.get("net_exclude_prefixes", ["lo", "docker", "veth", "br-", "virbr", "tailscale"])),
-        disk_mountpoint=str(loc.get("disk_mountpoint", "/")),
+        disk_mountpoints=[str(x) for x in (loc.get("disk_mountpoints") or [])],
+        disk_exclude_prefixes=(list(loc["disk_exclude_prefixes"]) if loc.get("disk_exclude_prefixes") is not None else None),
         prometheus=parse_prometheus(raw.get("prometheus")),
         services=parse_services(raw.get("services")),
         log_level=str(raw.get("log_level", "INFO")).upper(),

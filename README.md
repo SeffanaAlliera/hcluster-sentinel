@@ -3,7 +3,7 @@
 External observability dashboard for a homelab behind CGNAT. Agents on your nodes push **outbound HTTPS** to a Vercel-hosted Next.js app backed by Supabase Postgres. Nothing on your home network is exposed; Tailscale stays private. Your existing Prometheus/Grafana are reused, not replaced.
 
 * **Dashboard** (Next.js + Tailwind, dark): overview tiles, node cards (status, last heartbeat, uptime, CPU/RAM/disk, services up), node detail with CPU/memory/disk/network charts (1 h / 6 h / 24 h / 7 d from Supabase), services table (status, response time, last success/error), incident history (outage + recovery), add / disable / remove / rotate-token.
-* **Agent** (Python 3, stdlib + PyYAML, systemd): HTTP/TCP service checks, Prometheus `/api/v1/query` allowlist, `/proc` fallback, offline backlog queue, backoff, watchdog, `discover` command.
+* **Agent** (Python 3, stdlib + PyYAML, systemd): HTTP/TCP/DNS service checks, auto-detected multi-drive usage, CPU temperature, per-NIC + combined network throughput, Prometheus `/api/v1/query` allowlist, `/proc` fallback, offline backlog queue, backoff, watchdog, `discover` command.
 * **Database**: normalized schema, RLS, retention, SQL functions for ingest/offline detection/purge/rate limits.
 * **Multi-node**: nothing hard-coded to `h1`; add h2/h3 from the UI.
 

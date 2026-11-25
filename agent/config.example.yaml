@@ -38,13 +38,18 @@ prometheus:
     - { name: mem_percent,           expr: '100 * (1 - node_memory_MemAvailable_bytes{$SEL} / node_memory_MemTotal_bytes{$SEL})' }
     - { name: mem_available_bytes,   expr: 'node_memory_MemAvailable_bytes{$SEL}' }
     - { name: mem_total_bytes,       expr: 'node_memory_MemTotal_bytes{$SEL}' }
-    # Change mountpoint="/" if `discover` shows your root filesystem under a different mountpoint.
-    - { name: disk_percent,          expr: '100 * (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs",$SEL} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs",$SEL})' }
-    - { name: disk_available_bytes,  expr: 'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs",$SEL}' }
+    # EVERY real drive: one series per mountpoint (label_by). Bind mounts/overlay/tmpfs/boot/docker dirs are filtered out.
+    # If node_exporter runs in Docker with --path.rootfs, your drives may appear under a prefix: check `discover`.
+    - { name: disk_percent,         label_by: mountpoint, expr: '100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|vfat",mountpoint!~"/boot.*|/var/lib/docker.*|/var/lib/containers.*|/run.*|/snap.*|/sys.*|/proc.*|/dev.*",$SEL} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|vfat",mountpoint!~"/boot.*|/var/lib/docker.*|/var/lib/containers.*|/run.*|/snap.*|/sys.*|/proc.*|/dev.*",$SEL})' }
+    - { name: disk_available_bytes, label_by: mountpoint, expr: 'node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|vfat",mountpoint!~"/boot.*|/var/lib/docker.*|/var/lib/containers.*|/run.*|/snap.*|/sys.*|/proc.*|/dev.*",$SEL}' }
+    - { name: disk_total_bytes,     label_by: mountpoint, expr: 'node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|devtmpfs|vfat",mountpoint!~"/boot.*|/var/lib/docker.*|/var/lib/containers.*|/run.*|/snap.*|/sys.*|/proc.*|/dev.*",$SEL}' }
+    # CPU package temperature (needs node_exporter's hwmon collector; chip names vary: see `discover`).
+    - { name: cpu_temp_celsius,     expr: 'max(node_hwmon_temp_celsius{chip=~".*coretemp.*|.*k10temp.*|.*cpu_thermal.*",$SEL})' }
     - { name: load1,                 expr: 'node_load1{$SEL}' }
     - { name: load5,                 expr: 'node_load5{$SEL}' }
-    - { name: net_rx_bytes_per_sec,  expr: 'sum(rate(node_network_receive_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m]))' }
-    - { name: net_tx_bytes_per_sec,  expr: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m]))' }
+    # Network: per physical NIC (label = device) AND the combined total (sum_total). Virtual NICs are excluded by the regex.
+    - { name: net_rx_bytes_per_sec, label_by: device, sum_total: true, expr: 'rate(node_network_receive_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m])' }
+    - { name: net_tx_bytes_per_sec, label_by: device, sum_total: true, expr: 'rate(node_network_transmit_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m])' }
     # Example (only if cAdvisor is installed; verify with `discover`):
     # - { name: containers_cpu_cores, expr: 'sum(rate(container_cpu_usage_seconds_total{name!=""}[2m]))' }
     # - { name: containers_mem_bytes, expr: 'sum(container_memory_working_set_bytes{name!=""})' }
@@ -52,52 +57,37 @@ prometheus:
 # Local /proc metrics: used ONLY for metrics Prometheus can't provide (or when Prometheus is disabled).
 local_metrics:
   fallback: true
-  disk_mountpoint: "/"
+  # Drives: auto-detects every real mounted drive (ext4/xfs/btrfs/zfs/ntfs/...). To pin an explicit list instead:
+  # disk_mountpoints: ["/", "/mnt/media"]
+  # disk_exclude_prefixes: ["/boot", "/var/lib/docker", "/snap"]     # default list shown; mounts under these are skipped
+  # Network: every NIC except these prefixes is reported individually + as a combined total.
   net_exclude_prefixes: [lo, docker, veth, br-, virbr, tailscale]
 
 # ---------------------------------------------------------------------------
-# Service checks. No credentials are needed or supported.
-# The endpoints below are the services' well-known UPSTREAM DEFAULTS, not facts about your host.
-# VERIFY each one with `sudo hcluster-agent discover` (it lists listening ports and probes candidates),
-# then edit url/port here. A wrong value simply shows as "down" in the dashboard.
+# Service checks: list ONLY what runs on THIS node. Every node has its own list;
+# services appear in the dashboard automatically under the node that reports them.
+# No credentials are needed or supported.
+#   1. Run `sudo hcluster-agent discover` to see listening ports and probe common services.
+#   2. Add an entry per service, then `sudo systemctl restart hcluster-agent`.
+# See config.h1.example.yaml for a worked example (Jellyfin/Immich/Pi-hole/Syncthing/Samba).
+# Removing an entry stops its checks; delete the stale row from the node page in the dashboard.
 # ---------------------------------------------------------------------------
-services:
-  - key: jellyfin                 # stable id: lowercase letters, digits, - _ .
-    name: Jellyfin
-    type: http
-    url: "http://127.0.0.1:8096/health"          # VERIFY port (default 8096)
-    expected_status: "200-399"                    # int, "200-299", or a list
-    # expect_body_contains: "Healthy"
-    timeout_seconds: 5
-    interval_seconds: 60
-    degraded_after_ms: 3000                       # slower than this => DEGRADED (null disables)
-    retries: 1                                    # re-try once before reporting DOWN
-
-  - key: immich
-    name: Immich (Docker)
-    type: http
-    url: "http://127.0.0.1:2283/api/server/ping"  # VERIFY published host port of the Immich server container
-    expected_status: 200
-
-  - key: pihole
-    name: Pi-hole
-    type: http
-    url: "http://127.0.0.1/admin/"                # VERIFY: web UI port/path (80 or 8080 are common)
-    # verify_tls: false                           # for https:// URLs with self-signed certs
-
-  - key: syncthing
-    name: Syncthing
-    type: http
-    url: "http://127.0.0.1:8384/rest/noauth/health"   # VERIFY: GUI listen address (default 127.0.0.1:8384)
-
-  - key: samba
-    name: Samba
-    type: tcp
-    host: 127.0.0.1
-    port: 445                                     # VERIFY with `discover`
-
-  # Optional: show where a check goes only to admins. Set report_target: false to never send the URL/host.
-  # - key: example
-  #   type: http
-  #   url: http://127.0.0.1:1234/
-  #   report_target: false
+services: []
+  # - key: myservice             # stable id: lowercase letters, digits, - _ .
+  #   name: My service
+  #   type: http                 # http | tcp
+  #   url: "http://127.0.0.1:8080/health"
+  #   expected_status: "200-399" # int, "200-299", or a list
+  #   # expect_body_contains: "ok"
+  #   timeout_seconds: 5
+  #   interval_seconds: 60
+  #   degraded_after_ms: 3000    # slower => DEGRADED (null disables)
+  #   retries: 1
+  #   # verify_tls: false        # self-signed https
+  #   # report_target: false     # don't send the URL/host to the dashboard
+  #
+  # - key: fileshare
+  #   name: File share
+  #   type: tcp
+  #   host: 127.0.0.1
+  #   port: 445

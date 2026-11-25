@@ -125,6 +125,16 @@ const fut = await ingest(N, C, [report({ collected_at: new Date(Date.now() + 360
 ok(fut.accepted === 1, 'future timestamp is clamped, not rejected');
 ok((await one('select max(ts) m from public.node_heartbeats where node_id=$1', [N])).m <= new Date(Date.now() + 60_000), 'a +1h timestamp was clamped (no heartbeat beyond the 5-min skew allowance)');
 
+console.log('\nlabeled metrics (multi-drive / per-NIC)');
+await ingest(N, C, [report({ collected_at: new Date(Date.now() + 9000).toISOString(), metrics_report: metricsReport('ok', 'ok', [
+  { name: 'disk_percent', label: '/', value: 40, source: 'local' }, { name: 'disk_percent', label: '/mnt/media', value: 85, source: 'local' },
+  { name: 'cpu_temp_celsius', value: 55, source: 'local' }]) })]);
+const drv = await q("select label, value from public.node_latest_metrics where node_id=$1 and name='disk_percent' order by label", [N]);
+ok(drv.length === 2 && drv[1].label === '/mnt/media' && drv[1].value === 85, 'one latest row per drive label');
+ok((await one("select label from public.node_latest_metrics where node_id=$1 and name='cpu_temp_celsius'", [N])).label === '', 'node-wide metric has empty label');
+const dser = await q("select * from public.metric_series($1, array['disk_percent'], now() - interval '1 hour', now() + interval '1 hour', 300)", [N]);
+ok(new Set(dser.map(x => x.label)).size === 2, 'metric_series separates labels');
+
 console.log('\nmetric_series');
 const ser = await q("select * from public.metric_series($1, array['cpu_percent'], now() - interval '1 hour', now() + interval '1 hour', 300)", [N]);
 ok(ser.length > 0 && ser.every(x => x.name === 'cpu_percent'), 'metric_series returns bucketed rows');

@@ -3,6 +3,7 @@ import { buildToken, hashSecret, newSecret, parseBearer, parseToken, verifySecre
 import { agentPayload, nodeCreate, parseRange } from '../validation';
 import { effectiveNodeStatus, effectiveServiceStatus } from '../status';
 import { memoryLimit } from '../ratelimit';
+import { drives, nics, pick, seriesKey, worstDrive, type LatestRow } from '../metrics';
 
 const NODE = '11111111-2222-3333-4444-555555555555';
 const base = (over: object = {}) => ({ schema: 1, node_id: NODE, reports: [{ collected_at: '2026-01-01T00:00:00Z', ...over }] });
@@ -95,5 +96,33 @@ describe('memory limiter', () => {
     const k = 'k' + Math.random();
     expect([1, 2, 3, 4].map((i) => memoryLimit(k, 3, 1000, 1000 + i))).toEqual([true, true, true, false]);
     expect(memoryLimit(k, 3, 1000, 5000)).toBe(true);
+  });
+});
+
+describe('labeled metrics', () => {
+  const row = (name: string, label: string, value: number): LatestRow => ({ name, label, value, source: 'local', ts: 'x' });
+  const rows = [row('disk_percent', '/mnt/media', 85), row('disk_percent', '/', 40), row('disk_available_bytes', '/', 5e9), row('disk_total_bytes', '/', 1e10),
+    row('cpu_temp_celsius', '', 55), row('net_rx_bytes_per_sec', '', 300), row('net_rx_bytes_per_sec', 'enp1s0', 100), row('net_tx_bytes_per_sec', 'enp2s0', 5)];
+  it('lists every drive, root first, and finds the fullest', () => {
+    expect(drives(rows).map((d) => d.mount)).toEqual(['/', '/mnt/media']);
+    expect(drives(rows)[0]).toMatchObject({ percent: 40, available: 5e9, total: 1e10 });
+    expect(worstDrive(rows)?.mount).toBe('/mnt/media');
+    expect(worstDrive([])).toBeNull();
+  });
+  it('separates node-wide from labeled values', () => {
+    expect(pick(rows, 'cpu_temp_celsius')).toBe(55);
+    expect(pick(rows, 'disk_percent')).toBeUndefined();          // no unlabeled disk value: never invented
+    expect(pick(rows, 'net_rx_bytes_per_sec')).toBe(300);
+    expect(nics(rows)).toEqual(['enp1s0', 'enp2s0']);
+    expect(seriesKey('disk_percent', '/mnt/x')).toBe('disk_percent|/mnt/x');
+    expect(seriesKey('cpu_percent', '')).toBe('cpu_percent');
+  });
+  it('validates labels and the dns service type', () => {
+    const mr = (v: object) => base({ metrics_report: { status: 'ok', prometheus: { status: 'ok' }, values: [v] } });
+    const p = agentPayload.parse(mr({ name: 'disk_percent', label: '/mnt/a\u0000b', value: 3 }));
+    expect(p.reports[0].metrics_report!.values[0].label).toBe('/mnt/a b');
+    expect(agentPayload.parse(mr({ name: 'cpu_percent', value: 3 })).reports[0].metrics_report!.values[0].label).toBe('');
+    expect(agentPayload.parse(mr({ name: 'disk_percent', label: 'x'.repeat(100), value: 3 })).reports[0].metrics_report!.values[0].label).toHaveLength(64);
+    expect(agentPayload.safeParse(base({ services: [{ key: 'dnsmasq', name: 'dnsmasq', type: 'dns', status: 'operational' }] })).success).toBe(true);
   });
 });

@@ -26,6 +26,7 @@ CANDIDATE_METRICS = {
     "node_load1": "Load average (node_exporter)",
     "node_network_receive_bytes_total": "Network RX (node_exporter)",
     "node_network_transmit_bytes_total": "Network TX (node_exporter)",
+    "node_hwmon_temp_celsius": "CPU/board temperatures (node_exporter hwmon)",
     "container_cpu_usage_seconds_total": "Container CPU (cAdvisor)",
     "container_memory_usage_bytes": "Container memory (cAdvisor)",
 }
@@ -37,6 +38,9 @@ SERVICE_CANDIDATES = [
     ("pihole", "Pi-hole", "http", ["http://127.0.0.1/admin/", "http://127.0.0.1:8080/admin/"]),
     ("syncthing", "Syncthing", "http", ["http://127.0.0.1:8384/rest/noauth/health", "http://127.0.0.1:8384/"]),
     ("samba", "Samba", "tcp", ["127.0.0.1:445"]),
+    ("portainer", "Portainer", "http", ["http://127.0.0.1:9000/api/system/status", "https://127.0.0.1:9443/api/system/status"]),
+    ("gptwol", "GPTWOL", "http", ["http://127.0.0.1:5000/"]),
+    ("dnsmasq", "dnsmasq (DNS)", "dns", ["127.0.0.1:53"]),
 ]
 
 
@@ -86,8 +90,8 @@ def probe_service(key: str, name: str, typ: str, target: str) -> tuple[bool, str
         snippet = {"key": key, "name": name, "type": "http", "url": target}
     else:
         host, _, port = target.partition(":")
-        sc = ServiceCheck(key=key, name=name, type="tcp", host=host, port=int(port), timeout_seconds=4, retries=0, degraded_after_ms=None)
-        snippet = {"key": key, "name": name, "type": "tcp", "host": host, "port": int(port)}
+        sc = ServiceCheck(key=key, name=name, type=typ, host=host, port=int(port), timeout_seconds=4, retries=0, degraded_after_ms=None)
+        snippet = {"key": key, "name": name, "type": typ, "host": host, "port": int(port)}
     r = run_check(sc)
     if r.status == "down":
         return False, r.error or "down", snippet
@@ -135,6 +139,29 @@ def discover(prom_urls: list[str], proc: str = "/proc") -> int:
         if not (names & {"node_cpu_seconds_total"}):
             print("  → node_exporter metrics not found: either install node_exporter or rely on local /proc fallback metrics.")
 
+    print("\n-- Drives that will be monitored (local /proc/mounts auto-detection) --")
+    from .localmetrics import list_drives, read_cpu_temp, read_net_bytes
+    for mnt in list_drives(proc):
+        try:
+            st = os.statvfs(mnt)
+            print(f"    {mnt:30s} {st.f_blocks * st.f_frsize / 1e9:8.1f} GB total, {st.f_bavail * st.f_frsize / 1e9:8.1f} GB free")
+        except OSError as e:
+            print(f"    {mnt:30s} (cannot stat: {e})")
+    t = read_cpu_temp()
+    print(f"\n-- CPU temperature sensor: {'%.1f °C' % t if t is not None else 'none found in /sys (coretemp/k10temp/thermal_zone)'}")
+    print("\n-- Network interfaces (physical NICs are reported individually; virtual ones are excluded by prefix) --")
+    try:
+        for ifc in sorted(read_net_bytes(proc, [])):
+            virtual = os.path.exists(f"/sys/devices/virtual/net/{ifc}")
+            try:
+                state = open(f"/sys/class/net/{ifc}/operstate").read().strip()
+            except OSError:
+                state = "?"
+            print(f"    {ifc:16s} {'virtual ' if virtual else 'PHYSICAL'} state={state}")
+    except OSError:
+        pass
+    print("  (edit local_metrics.net_exclude_prefixes and the device!~ regex in the Prometheus queries to change what counts)")
+
     print("\n-- Listening TCP ports (run with sudo to see process names) --")
     for port, addr, comm in listening_ports(proc):
         print(f"    {addr:>15}:{port:<6} {comm}")
@@ -157,7 +184,7 @@ def discover(prom_urls: list[str], proc: str = "/proc") -> int:
         for s in snippets:
             print(f"  - key: {s['key']}\n    name: {s['name']}\n    type: {s['type']}")
             if s["type"] == "http":
-                print(f"    url: {s['url']}")
+                print(f"    url: {s['url']}" + ("\n    verify_tls: false" if s["url"].startswith("https") else ""))
             else:
                 print(f"    host: {s['host']}\n    port: {s['port']}")
     return 0

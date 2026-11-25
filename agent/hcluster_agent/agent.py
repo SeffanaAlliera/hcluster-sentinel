@@ -38,12 +38,19 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _entry(name: str, label: str, value: float, source: str) -> dict:
+    e = {"name": name, "value": value, "source": source}
+    if label:
+        e["label"] = label
+    return e
+
+
 class Agent:
     def __init__(self, cfg: Config, reporter: Reporter | None = None, now=time.monotonic):
         self.cfg = cfg
         self.reporter = reporter or Reporter(cfg)
         self.now = now
-        self.local = LocalCollector(cfg.disk_mountpoint, cfg.net_exclude_prefixes)
+        self.local = LocalCollector(cfg.disk_mountpoints or None, cfg.net_exclude_prefixes, disk_exclude=cfg.disk_exclude_prefixes)
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="check")
         t = self.now()
         self.next_hb = t
@@ -74,13 +81,14 @@ class Agent:
         values: list[dict] = []
         if cfg.prometheus.enabled:
             pr = prom_collect(cfg.prometheus)
-            for name, v in pr.values.items():
-                values.append({"name": name, "value": v, "source": "prometheus"})
+            for (name, label), v in pr.values.items():
+                values.append(_entry(name, label, v, "prometheus"))
             unavailable = list(pr.unavailable)
             if cfg.local_fallback:
                 for name in list(unavailable):
-                    if name in local:
-                        values.append({"name": name, "value": local[name], "source": "local"})
+                    got = [(k, v) for k, v in local.items() if k[0] == name]
+                    if got:                           # fill the whole metric (every drive / NIC) from the kernel
+                        values.extend(_entry(k[0], k[1], v, "local") for k, v in got)
                         unavailable.remove(name)
             for name, err in pr.errors.items():
                 log.debug("query %s failed: %s", name, err)
@@ -90,10 +98,10 @@ class Agent:
                                    "down_targets": pr.down_targets},
                     "values": values, "unavailable": unavailable}
         if cfg.local_fallback:
-            for name, v in local.items():
-                values.append({"name": name, "value": v, "source": "local"})
+            for (name, label), v in local.items():
+                values.append(_entry(name, label, v, "local"))
             core = {"mem_percent", "disk_percent"}
-            status = "ok" if core & set(local) else "failed"
+            status = "ok" if core & {k[0] for k in local} else "failed"
             return {"status": status, "prometheus": {"status": "disabled"}, "values": values, "unavailable": []}
         return {"status": "disabled", "prometheus": {"status": "disabled"}, "values": [], "unavailable": []}
 

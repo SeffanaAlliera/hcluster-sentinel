@@ -46,10 +46,11 @@ sudo ./install.sh --api-url https://YOUR-APP.vercel.app --node-id <NODE-UUID>   
 It creates user `hcluster`, `/opt/hcluster-agent` (venv), `/etc/hcluster-agent/{config.yaml,agent.env}`, installs and starts `hcluster-agent.service` (enabled on boot, `Restart=always`).
 
 ## 8. Configure service checks — verify real ports first
+Each node defines **only its own services** in its `config.yaml` (new nodes start with an empty list). For h1, copy the `services:` block from `agent/config.h1.example.yaml`; for h2/h3 add whatever they actually run.
 ```bash
 sudo hcluster-agent discover
 ```
-It lists listening TCP ports (with process names), probes the well-known defaults for Jellyfin (8096), Immich (2283), Pi-hole (80/8080), Syncthing (8384), Samba (445) and prints a ✔/✘ per endpoint plus paste-ready YAML for those that answered. Edit `/etc/hcluster-agent/config.yaml` → `services:` accordingly (the shipped values are **upstream defaults to verify**, not facts about your machine), then `sudo systemctl restart hcluster-agent`.
+It lists the drives it will monitor, the CPU temperature sensor, network interfaces (physical vs virtual), listening TCP ports (with process names), probes the well-known defaults for Jellyfin (8096), Immich (2283), Pi-hole (80/8080), Syncthing (8384), Samba (445), Portainer (9000/9443), GPTWOL (5000) and a DNS query to 127.0.0.1:53 for dnsmasq and prints a ✔/✘ per endpoint plus paste-ready YAML for those that answered. Edit `/etc/hcluster-agent/config.yaml` → `services:` accordingly (the values in `config.h1.example.yaml` are **upstream defaults to verify**, not facts about your machine), then `sudo systemctl restart hcluster-agent`.
 Tips: Docker (Immich) → use the *published host port*; `docker ps --format '{{.Names}} {{.Ports}}'`. Syncthing GUI may listen on 127.0.0.1 only — fine, the agent runs on the same host.
 
 ## 9. Connect the agent to Prometheus
@@ -79,7 +80,7 @@ sudo systemctl stop hcluster-agent         # or: sudo ip link set <iface> down /
 After `offline_threshold_seconds` (180 s default) + ≤1 min: node **Offline**, services Unknown, incident "Node offline" (started at the last heartbeat). `sudo systemctl start hcluster-agent` → node recovers, incident resolved. Network-only outage: the agent queues reports (up to 12 h) and back-fills history when connectivity returns.
 
 ## 14. Register h2 and h3
-No code changes. Dashboard → **Add node** → new Node ID + token → run `agent/install.sh` on that machine with its own values → edit its `config.yaml` (services, Prometheus URL/selector) → restart. Disable/remove nodes from the node page; **Rotate token** revokes the old token instantly.
+No code changes. Dashboard → **Add node** → new Node ID + token → run `agent/install.sh` on that machine with its own values → edit its `config.yaml` (its own services, Prometheus URL/selector) → restart. Disable/remove nodes from the node page; **Rotate token** revokes the old token instantly.
 
 ## Updating / removing the agent
 ```bash

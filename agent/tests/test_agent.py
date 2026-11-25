@@ -23,7 +23,7 @@ NODE = "11111111-2222-3333-4444-555555555555"
 def mkcfg(**over) -> C.Config:
     base = dict(api_url="http://127.0.0.1:1", node_id=NODE, token="hcs_test", heartbeat_seconds=60, metrics_seconds=60,
                 request_timeout_seconds=2, max_queue=50, state_dir=tempfile.mkdtemp(), local_fallback=True,
-                net_exclude_prefixes=["lo"], disk_mountpoint="/", prometheus=C.PrometheusConfig(), services=[])
+                net_exclude_prefixes=["lo"], disk_mountpoints=[], disk_exclude_prefixes=None, prometheus=C.PrometheusConfig(), services=[])
     base.update(over)
     return C.Config(**base)
 
@@ -85,11 +85,18 @@ class ConfigTests(unittest.TestCase):
             C.parse_status_ranges("2xx")
 
     def test_example_config_parses(self):
-        p = os.path.join(os.path.dirname(__file__), "..", "config.example.yaml")
-        txt = open(p).read().replace("00000000-0000-0000-0000-000000000000", NODE)
-        cfg = C.load_config(write_cfg(txt), {"HCLUSTER_TOKEN": "t"})
-        self.assertEqual({s.key for s in cfg.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba"})
-        self.assertGreaterEqual(len(cfg.prometheus.queries), 10)
+        d = os.path.join(os.path.dirname(__file__), "..")
+        load = lambda f: C.load_config(write_cfg(open(os.path.join(d, f)).read().replace("00000000-0000-0000-0000-000000000000", NODE)), {"HCLUSTER_TOKEN": "t"})
+        generic = load("config.example.yaml")
+        self.assertEqual(generic.services, [])                       # new nodes start with NO assumed services
+        self.assertGreaterEqual(len(generic.prometheus.queries), 10)
+        h1 = load("config.h1.example.yaml")
+        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq"})
+        self.assertEqual(next(x for x in h1.services if x.key == "dnsmasq").type, "dns")
+        names = {(q.name, q.label_by) for q in generic.prometheus.queries}
+        self.assertIn(("disk_percent", "mountpoint"), names)
+        self.assertIn(("net_rx_bytes_per_sec", "device"), names)
+        self.assertIn(("cpu_temp_celsius", None), names)
 
 
 class SelectorTests(unittest.TestCase):
@@ -183,7 +190,7 @@ class PrometheusTests(unittest.TestCase):
         url, _ = self.srv(lambda h, b: prom_vector(12.5))
         r = collect(self.cfg(url))
         self.assertEqual((r.prom_status, r.metrics_status), ("ok", "ok"))
-        self.assertEqual(r.values, {"cpu_percent": 12.5, "mem_percent": 12.5})
+        self.assertEqual(r.values, {("cpu_percent", ""): 12.5, ("mem_percent", ""): 12.5})
         self.assertEqual((r.targets_up, r.targets_total), (1, 2))
         self.assertEqual(r.down_targets, ["cadvisor/h1:8080"])
 
@@ -194,7 +201,7 @@ class PrometheusTests(unittest.TestCase):
         r = collect(self.cfg(url))
         self.assertEqual(r.metrics_status, "partial")
         self.assertEqual(r.unavailable, ["mem_percent"])
-        self.assertNotIn("mem_percent", r.values)
+        self.assertNotIn(("mem_percent", ""), r.values)
 
     def test_all_empty_is_failed(self):
         url, _ = self.srv(lambda h, b: prom_empty())
@@ -224,7 +231,7 @@ class PrometheusTests(unittest.TestCase):
         url, _ = self.srv(q)
         cfg = self.cfg(url, ("cpu_percent",))
         cfg.queries[0].reduce = "avg"
-        self.assertEqual(collect(cfg).values["cpu_percent"], 3.0)
+        self.assertEqual(collect(cfg).values[("cpu_percent", "")], 3.0)
 
     def test_selector_sent(self):
         url, cls = self.srv(lambda h, b: prom_vector(1))
@@ -236,35 +243,132 @@ class PrometheusTests(unittest.TestCase):
 
 
 class LocalMetricsTests(unittest.TestCase):
-    def fake_proc(self, cpu, rx=1000, tx=500):
+    def fake_proc(self, cpu, rx=1000, tx=500, mounts=None):
         d = tempfile.mkdtemp()
         os.makedirs(f"{d}/net")
         open(f"{d}/stat", "w").write(f"cpu  {cpu[0]} 0 {cpu[1]} {cpu[2]} 0 0 0 0 0 0\ncpu0 1 1 1 1 0 0 0 0 0 0\n")
         open(f"{d}/meminfo", "w").write("MemTotal:       4000000 kB\nMemAvailable:   1000000 kB\n")
         open(f"{d}/loadavg", "w").write("0.50 0.40 0.30 1/100 123\n")
+        open(f"{d}/mounts", "w").write(mounts or "")
         open(f"{d}/net/dev", "w").write("Inter-|   Receive\n face |bytes\n"
-                                          f"  lo: 999999 1 0 0 0 0 0 0 999999 1 0 0 0 0 0 0\n eth0: {rx} 1 0 0 0 0 0 0 {tx} 1 0 0 0 0 0 0\n")
+                                          f"  lo: 999999 1 0 0 0 0 0 0 999999 1 0 0 0 0 0 0\n eth0: {rx} 1 0 0 0 0 0 0 {tx} 1 0 0 0 0 0 0\n"
+                                          f" eth1: {rx * 2} 1 0 0 0 0 0 0 {tx * 2} 1 0 0 0 0 0 0\n")
         return d
 
-    def test_values(self):
+    def test_values_per_nic_and_total(self):
         t = [100.0]
-        lc = LocalCollector("/", ["lo"], clock=lambda: t[0])
+        lc = LocalCollector(["/"], ["lo"], clock=lambda: t[0], sys_root="/nonexistent")
         lc.proc = self.fake_proc((100, 0, 900))
         first = lc.collect()
-        self.assertNotIn("cpu_percent", first)            # needs two samples; not invented
-        self.assertEqual(first["mem_percent"], 75.0)
-        self.assertEqual(first["load1"], 0.5)
-        lc.proc = self.fake_proc((200, 0, 1000), rx=3000, tx=1500)   # +100 busy, +100 idle => 50%
+        self.assertNotIn(("cpu_percent", ""), first)                  # needs two samples; not invented
+        self.assertEqual(first[("mem_percent", "")], 75.0)
+        self.assertEqual(first[("load1", "")], 0.5)
+        lc.proc = self.fake_proc((200, 0, 1000), rx=3000, tx=1500)
         t[0] = 102.0
         second = lc.collect()
-        self.assertEqual(second["cpu_percent"], 50.0)
-        self.assertEqual(second["net_rx_bytes_per_sec"], 1000.0)   # (3000-1000)/2 ; lo excluded
-        self.assertEqual(second["net_tx_bytes_per_sec"], 500.0)
-        self.assertIn("disk_percent", second)
+        self.assertEqual(second[("cpu_percent", "")], 50.0)
+        self.assertEqual(second[("net_rx_bytes_per_sec", "eth0")], 1000.0)   # (3000-1000)/2
+        self.assertEqual(second[("net_rx_bytes_per_sec", "eth1")], 2000.0)   # second physical NIC
+        self.assertEqual(second[("net_rx_bytes_per_sec", "")], 3000.0)       # combined total of both NICs
+        self.assertEqual(second[("net_tx_bytes_per_sec", "")], 1500.0)
+        self.assertFalse(any(k[1] == "lo" for k in second))
+        self.assertIn(("disk_percent", "/"), second)
+
+    def test_multiple_drives_detected_and_filtered(self):
+        mounts = ("/dev/sda2 / ext4 rw 0 0\n/dev/sda1 /boot/efi vfat rw 0 0\n/dev/sdb1 /mnt/media ext4 rw 0 0\n"
+                  "/dev/sdc1 /mnt/with\\040space xfs rw 0 0\ntmpfs /run tmpfs rw 0 0\noverlay /var/lib/docker/overlay2/x overlay rw 0 0\n"
+                  "/dev/sdb1 /srv/bindmount ext4 rw 0 0\n/dev/loop0 /snap/core/1 squashfs ro 0 0\n/dev/sdd1 /var/lib/docker/volumes ext4 rw 0 0\n")
+        from hcluster_agent.localmetrics import list_drives
+        proc = self.fake_proc((1, 2, 3), mounts=mounts)
+        self.assertEqual(list_drives(proc), ["/", "/mnt/media", "/mnt/with space"])   # efi, tmpfs, overlay, bind dup, squashfs, docker dirs skipped
+        self.assertEqual(list_drives(proc, only=["/data"]), ["/data"])
+
+    def test_cpu_temp_hwmon_and_fallbacks(self):
+        from hcluster_agent.localmetrics import read_cpu_temp
+        sysd = tempfile.mkdtemp()
+        hw = f"{sysd}/class/hwmon/hwmon3"; os.makedirs(hw)
+        open(f"{hw}/name", "w").write("coretemp\n")
+        open(f"{hw}/temp1_input", "w").write("55000\n"); open(f"{hw}/temp1_label", "w").write("Package id 0\n")
+        open(f"{hw}/temp2_input", "w").write("61000\n"); open(f"{hw}/temp2_label", "w").write("Core 0\n")
+        self.assertEqual(read_cpu_temp(sysd), 55.0)                       # package sensor preferred
+        os.remove(f"{hw}/temp1_label")
+        self.assertEqual(read_cpu_temp(sysd), 61.0)                       # else hottest sensor
+        other = tempfile.mkdtemp()
+        z = f"{other}/class/thermal/thermal_zone0"; os.makedirs(z)
+        open(f"{z}/type", "w").write("x86_pkg_temp\n"); open(f"{z}/temp", "w").write("48500\n")
+        self.assertEqual(read_cpu_temp(other), 48.5)                      # thermal_zone fallback
+        self.assertIsNone(read_cpu_temp(tempfile.mkdtemp()))              # no sensor => None, not invented
+        open(f"{hw}/temp2_input", "w").write("0\n"); open(f"{hw}/temp1_input", "w").write("999000\n")
+        self.assertIsNone(read_cpu_temp(sysd))                            # absurd readings rejected
+
+    def test_temp_reaches_collector(self):
+        sysd = tempfile.mkdtemp(); hw = f"{sysd}/class/hwmon/hwmon0"; os.makedirs(hw)
+        open(f"{hw}/name", "w").write("k10temp\n"); open(f"{hw}/temp1_input", "w").write("42000\n")
+        lc = LocalCollector(["/"], [], sys_root=sysd)
+        lc.proc = self.fake_proc((1, 2, 3))
+        self.assertEqual(lc.collect()[("cpu_temp_celsius", "")], 42.0)
 
     def test_missing_proc_does_not_raise(self):
-        lc = LocalCollector("/nonexistent-mount", [], proc="/nonexistent-proc")
+        lc = LocalCollector(["/nonexistent-mount"], [], proc="/nonexistent-proc", sys_root="/nonexistent")
         self.assertEqual(lc.collect(), {})
+
+
+class LabeledPrometheusTests(unittest.TestCase):
+    def test_label_by_keeps_every_series_and_sums_total(self):
+        def q(h, b):
+            return jresp({"status": "success", "data": {"resultType": "vector", "result": [
+                {"metric": {"mountpoint": "/mnt/media"}, "value": [1, "85"]}, {"metric": {"mountpoint": "/"}, "value": [1, "40"]},
+                {"metric": {}, "value": [1, "7"]}]}})            # series without the label are ignored
+        srv, cls, url = start_server({"/api/v1/targets": lambda h, b: jresp({"status": "success", "data": {"activeTargets": []}}), "/api/v1/query": q})
+        self.addCleanup(srv.shutdown)
+        cfg = C.PrometheusConfig(enabled=True, base_url=url, timeout_seconds=2,
+                                 queries=[C.PromQuery("disk_percent", "x", label_by="mountpoint"), C.PromQuery("net_rx_bytes_per_sec", "y", label_by="mountpoint", sum_total=True)])
+        r = collect(cfg)
+        self.assertEqual(r.values[("disk_percent", "/")], 40.0)
+        self.assertEqual(r.values[("disk_percent", "/mnt/media")], 85.0)
+        self.assertNotIn(("disk_percent", ""), r.values)
+        self.assertEqual(r.values[("net_rx_bytes_per_sec", "")], 125.0)     # sum_total adds the node-wide value
+        self.assertEqual(r.metrics_status, "ok")
+
+
+class DnsCheckTests(unittest.TestCase):
+    def serve(self, rcode=0, wrong_id=False, reply=True):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); sock.bind(("127.0.0.1", 0))
+        self.addCleanup(sock.close)
+        def loop():
+            sock.settimeout(3)
+            try:
+                data, addr = sock.recvfrom(512)
+            except OSError:
+                return
+            if not reply:
+                return
+            qid = data[:2] if not wrong_id else b"\x00\x00"
+            sock.sendto(qid + bytes([0x81, 0x80 | rcode]) + data[4:], addr)
+        import threading; threading.Thread(target=loop, daemon=True).start()
+        return sock.getsockname()[1]
+
+    def chk(self, port, **kw):
+        return run_check(C.ServiceCheck(key="d", name="d", type="dns", host="127.0.0.1", port=port, retries=0, timeout_seconds=1, **kw))
+
+    def test_ok_nxdomain_and_errors(self):
+        self.assertEqual(self.chk(self.serve(0)).status, "operational")
+        self.assertEqual(self.chk(self.serve(3)).status, "operational")      # NXDOMAIN still proves the resolver works
+        r = self.chk(self.serve(2)); self.assertEqual(r.status, "down"); self.assertIn("SERVFAIL", r.error)
+        self.assertEqual(self.chk(self.serve(5)).status, "down")             # REFUSED
+        self.assertEqual(self.chk(self.serve(0, wrong_id=True)).status, "down")
+        self.assertEqual(self.chk(self.serve(reply=False)).status, "down")   # timeout
+
+    def test_query_packet(self):
+        from hcluster_agent.checks import build_dns_query
+        pkt = build_dns_query("example.com", 0x1234)
+        self.assertEqual(pkt[:2], b"\x12\x34")
+        self.assertIn(b"\x07example\x03com\x00", pkt)
+
+    def test_config_accepts_dns_defaults(self):
+        cfg = C.load_config(write_cfg(f"node: {{id: '{NODE}'}}\napi: {{url: 'https://x.example.com'}}\nservices:\n  - {{key: dns1, type: dns}}\n"), {"HCLUSTER_TOKEN": "t"})
+        s = cfg.services[0]
+        self.assertEqual((s.host, s.port, s.query_name), ("127.0.0.1", 53, "example.com"))
 
 
 class ReporterTests(unittest.TestCase):
@@ -373,6 +477,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(mr["prometheus"]["status"], "ok")
         vals = {v["name"]: v for v in mr["values"]}
         self.assertEqual(vals["cpu_percent"]["source"], "prometheus")
+        self.assertNotIn("label", vals["cpu_percent"])                     # node-wide metrics carry no label
         self.assertIn("host", rep)
         self.assertNotIn("token", str(rep).lower())
 
@@ -383,7 +488,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(rep["metrics_report"]["prometheus"]["status"], "unreachable")
         self.assertEqual(rep["metrics_report"]["status"], "failed")
         self.assertEqual(len(rep["services"]), 1)                           # service checks still ran
-        self.assertEqual(len(agent.reporter.queue), 1)                      # heartbeat still queued
+        self.assertEqual(len(agent.reporter.queue), 1)
 
     def test_missing_metric_reported_unavailable_when_no_fallback(self):
         ps, pc, purl = start_server({"/api/v1/targets": lambda h, b: jresp({"status": "success", "data": {"activeTargets": []}}),

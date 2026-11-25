@@ -14,7 +14,7 @@ const iso = z.string().datetime({ offset: true });
 const service = z.object({
   key: z.string().regex(KEY_RE),
   name: text(80).pipe(z.string().min(1)),
-  type: z.enum(['http', 'tcp']),
+  type: z.enum(['http', 'tcp', 'dns']),
   target: optText(300),
   status: z.enum(['operational', 'degraded', 'down']),
   response_ms: z.number().int().min(0).max(600_000).nullish(),
@@ -25,6 +25,7 @@ const service = z.object({
 
 const metricValue = z.object({
   name: z.string().regex(METRIC_RE),
+  label: text(64).default(''),
   value: num.refine((v) => Math.abs(v) < 1e18, 'out of range'),
   source: z.enum(['prometheus', 'local']).default('prometheus'),
 });
@@ -38,7 +39,7 @@ const metricsReport = z.object({
     targets_total: z.number().int().min(0).max(100000).nullish(),
     down_targets: z.array(text(120)).max(10).optional(),
   }),
-  values: z.array(metricValue).max(64),
+  values: z.array(metricValue).max(128),
   unavailable: z.array(z.string().regex(METRIC_RE)).max(64).default([]),
 });
 

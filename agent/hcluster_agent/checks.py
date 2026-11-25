@@ -1,8 +1,10 @@
 """Service availability checks (HTTP / TCP). No credentials, no side effects."""
 from __future__ import annotations
 
+import random
 import socket
 import ssl
+import struct
 import time
 import urllib.error
 import urllib.request
@@ -80,9 +82,37 @@ def _tcp_once(sc: ServiceCheck) -> CheckResult:
     return CheckResult("operational", ms, None, None)
 
 
+def build_dns_query(name: str, qid: int) -> bytes:
+    labels = b"".join(bytes([len(p)]) + p.encode("idna") for p in name.strip(".").split(".") if p)
+    return struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0) + labels + b"\x00" + struct.pack(">HH", 1, 1)   # A / IN
+
+
+def _dns_once(sc: ServiceCheck) -> CheckResult:
+    """Sends one UDP DNS query. ANY well-formed answer (NOERROR or NXDOMAIN) means the resolver is alive."""
+    qid = random.randrange(65536)
+    start = time.monotonic()
+    try:
+        fam, typ, proto, _, addr = socket.getaddrinfo(sc.host, sc.port, type=socket.SOCK_DGRAM)[0]
+        with socket.socket(fam, typ, proto) as s:
+            s.settimeout(sc.timeout_seconds)
+            s.sendto(build_dns_query(sc.query_name, qid), addr)
+            data, _ = s.recvfrom(4096)
+    except Exception as e:  # noqa: BLE001
+        return CheckResult("down", None, None, _short(e))
+    ms = int((time.monotonic() - start) * 1000)
+    if len(data) < 12 or struct.unpack(">H", data[:2])[0] != qid or not data[2] & 0x80:
+        return CheckResult("down", ms, None, "invalid DNS response")
+    rcode = data[3] & 0x0F
+    if rcode not in (0, 3):
+        return CheckResult("down", ms, None, f"DNS error rcode {rcode} ({'SERVFAIL' if rcode == 2 else 'REFUSED' if rcode == 5 else 'error'})")
+    if sc.degraded_after_ms is not None and ms > sc.degraded_after_ms:
+        return CheckResult("degraded", ms, None, f"slow DNS answer ({ms} ms)")
+    return CheckResult("operational", ms, None, None)
+
+
 def run_check(sc: ServiceCheck, sleep=time.sleep) -> CheckResult:
     """Runs the check, retrying `retries` times on failure to absorb transient blips."""
-    fn = _http_once if sc.type == "http" else _tcp_once
+    fn = {"http": _http_once, "tcp": _tcp_once, "dns": _dns_once}[sc.type]
     res = fn(sc)
     attempts = 0
     while res.status == "down" and attempts < sc.retries:

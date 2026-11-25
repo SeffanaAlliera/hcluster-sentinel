@@ -6,6 +6,7 @@ import { getNode, listIncidents, listServices, metricSeries } from '@/lib/data';
 import { effectiveNodeStatus } from '@/lib/status';
 import { ago, bytes, duration, pct, utc } from '@/lib/format';
 import { RANGES, parseRange } from '@/lib/validation';
+import { drives, nics, pick, seriesKey, worstDrive, type LatestRow } from '@/lib/metrics';
 import { StatusBadge } from '@/components/StatusBadge';
 import { ServiceTable } from '@/components/ServiceTable';
 import { IncidentList } from '@/components/IncidentList';
@@ -23,20 +24,35 @@ export default async function NodePage({ params, searchParams }: { params: Promi
   if (!node) notFound();
   const [services, incidents, ms, latestRes] = await Promise.all([
     listServices(supabase, id), listIncidents(supabase, { nodeId: id, limit: 30 }), metricSeries(supabase, id, range),
-    supabase.from('node_latest_metrics').select('name,value,source').eq('node_id', id),
+    supabase.from('node_latest_metrics').select('name,label,value,source,ts').eq('node_id', id),
   ]);
-  const latest = Object.fromEntries((latestRes.data ?? []).map((r) => [r.name, r]));
+  const latest = (latestRes.data ?? []) as LatestRow[];
+  const driveList = drives(latest);
+  const worst = worstDrive(latest);
+  const nicList = nics(latest);
+  const temp = pick(latest, 'cpu_temp_celsius');
   const eff = node.enabled ? effectiveNodeStatus(node) : 'unknown';
   const live = node.enabled && (eff === 'online' || eff === 'degraded');
 
-  // merge series into rows keyed by timestamp
-  const rows = (keys: string[]) => {
-    const m = new Map<number, Record<string, number | null> & { t: number }>();
-    for (const k of keys) for (const [t, v] of ms.series[k] ?? []) { const r = m.get(t) ?? ({ t } as Record<string, number | null> & { t: number }); r[k] = v; m.set(t, r); }
-    return [...m.values()].sort((a, b) => a.t - b.t);
+  // merge series into chart rows. Keys are k0,k1,... (labels may contain characters recharts treats as paths)
+  type Row = Record<string, number | null> & { t: number };
+  const build = (defs: { name: string; label: string; legend: string; color: string }[]) => {
+    const m = new Map<number, Row>();
+    const series = defs.map((d, i) => ({ key: `k${i}`, label: d.legend, color: d.color, pts: ms.series[seriesKey(d.name, d.label)] ?? [] }));
+    for (const sr of series) for (const [t, v] of sr.pts) { const r = m.get(t) ?? ({ t } as Row); r[sr.key] = v; m.set(t, r); }
+    return { data: [...m.values()].sort((x, y) => x.t - y.t), series: series.filter((x) => x.pts.length).map(({ key, label, color }) => ({ key, label, color })) };
   };
+  const COLORS = ['#fbbf24', '#38bdf8', '#a78bfa', '#34d399', '#f472b6', '#fb923c', '#22d3ee', '#e879f9'];
+  const driveMounts = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('disk_percent|')).map((k) => k.slice('disk_percent|'.length)))].sort();
+  const cpuC = build([{ name: 'cpu_percent', label: '', legend: 'CPU', color: '#38bdf8' }]);
+  const tempC = build([{ name: 'cpu_temp_celsius', label: '', legend: 'CPU temp', color: '#fb923c' }]);
+  const memC = build([{ name: 'mem_percent', label: '', legend: 'Memory', color: '#a78bfa' }]);
+  const diskC = build(driveMounts.map((m, i) => ({ name: 'disk_percent', label: m, legend: m, color: COLORS[i % COLORS.length] })));
+  const netC = build([{ name: 'net_rx_bytes_per_sec', label: '', legend: 'Receive (all NICs)', color: '#34d399' }, { name: 'net_tx_bytes_per_sec', label: '', legend: 'Transmit (all NICs)', color: '#f472b6' }]);
+  const nicNames = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('net_rx_bytes_per_sec|')).map((k) => k.slice('net_rx_bytes_per_sec|'.length)))].sort();
+  const nicCharts = nicNames.map((n) => ({ n, c: build([{ name: 'net_rx_bytes_per_sec', label: n, legend: 'Receive', color: '#34d399' }, { name: 'net_tx_bytes_per_sec', label: n, legend: 'Transmit', color: '#f472b6' }]) }));
   const span = RANGES[range].seconds * 1000;
-  const sources = new Set((latestRes.data ?? []).map((l) => l.source as string));
+  const sources = new Set(latest.map((l) => l.source));
 
   return (
     <div className="space-y-6">
@@ -50,11 +66,12 @@ export default async function NodePage({ params, searchParams }: { params: Promi
         {node.enabled && node.status_reason && eff !== 'online' && <p className="mt-1 text-sm text-slate-400">{node.status_reason}</p>}
       </div>
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <StatCard label="Last heartbeat" value={ago(node.last_heartbeat_at)} />
         <StatCard label="Uptime" value={live ? duration(node.uptime_seconds) : '—'} />
-        <StatCard label="CPU / RAM" value={live ? `${pct(latest.cpu_percent?.value)} / ${pct(latest.mem_percent?.value)}` : '—'} />
-        <StatCard label="Disk" value={live ? `${pct(latest.disk_percent?.value)}${latest.disk_available_bytes ? ` · ${bytes(latest.disk_available_bytes.value)} free` : ''}` : '—'} />
+        <StatCard label="CPU / RAM" value={live ? `${pct(pick(latest, 'cpu_percent'))} / ${pct(pick(latest, 'mem_percent'))}` : '—'} />
+        <StatCard label="CPU temperature" value={live && temp != null ? `${temp.toFixed(0)}°C` : 'n/a'} tone={live && temp != null && temp >= 85 ? 'bad' : live && temp != null && temp >= 75 ? 'warn' : undefined} />
+        <StatCard label={driveList.length > 1 ? `Fullest drive (${worst?.mount})` : 'Disk'} value={live && worst ? `${pct(worst.percent)}${worst.available != null ? ` · ${bytes(worst.available)} free` : ''}` : '—'} />
       </section>
 
       <section className="card p-4">
@@ -77,11 +94,27 @@ export default async function NodePage({ params, searchParams }: { params: Promi
       <section>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Metrics</h2><RangeTabs base={`/nodes/${id}`} current={range} /></div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <MetricChart title="CPU utilisation" unit="percent" spanMs={span} data={rows(['cpu_percent'])} series={[{ key: 'cpu_percent', label: 'CPU', color: '#38bdf8' }]} />
-          <MetricChart title="Memory utilisation" unit="percent" spanMs={span} data={rows(['mem_percent'])} series={[{ key: 'mem_percent', label: 'Memory', color: '#a78bfa' }]} />
-          <MetricChart title="Disk utilisation" unit="percent" spanMs={span} data={rows(['disk_percent'])} series={[{ key: 'disk_percent', label: 'Disk', color: '#fbbf24' }]} />
-          <MetricChart title="Network throughput" unit="bytes" spanMs={span} data={rows(['net_rx_bytes_per_sec', 'net_tx_bytes_per_sec'])} series={[{ key: 'net_rx_bytes_per_sec', label: 'Receive', color: '#34d399' }, { key: 'net_tx_bytes_per_sec', label: 'Transmit', color: '#f472b6' }]} />
+          <MetricChart title="CPU utilisation" unit="percent" spanMs={span} {...cpuC} />
+          <MetricChart title="CPU temperature" unit="celsius" spanMs={span} {...tempC} />
+          <MetricChart title="Memory utilisation" unit="percent" spanMs={span} {...memC} />
+          <MetricChart title={`Disk utilisation${driveMounts.length > 1 ? ` (${driveMounts.length} drives)` : ''}`} unit="percent" spanMs={span} {...diskC} />
+          <MetricChart title="Network throughput — all NICs combined" unit="bytes" spanMs={span} {...netC} />
+          {nicCharts.length > 1 && nicCharts.map(({ n, c }) => <MetricChart key={n} title={`Network — ${n}`} unit="bytes" spanMs={span} {...c} />)}
         </div>
+        {driveList.length > 0 && (
+          <div className="card mt-4 p-4">
+            <h3 className="mb-3 text-sm font-medium text-slate-200">Drives ({driveList.length})</h3>
+            <ul className="space-y-3">
+              {driveList.map((d) => {
+                const v = d.percent ?? 0; const color = v >= 90 ? 'bg-rose-500' : v >= 75 ? 'bg-amber-400' : 'bg-sky-500';
+                return (<li key={d.mount}>
+                  <div className="mb-1 flex justify-between text-xs"><span className="font-mono text-slate-200">{d.mount}</span><span className="text-slate-400">{pct(d.percent)} used · {bytes(d.available)} free of {bytes(d.total)}</span></div>
+                  <div className="h-1.5 rounded-full bg-ink-700"><div className={`h-1.5 rounded-full ${color}`} style={{ width: `${Math.min(100, v)}%` }} /></div></li>);
+              })}
+            </ul>
+            {nicList.length > 0 && <p className="mt-3 text-xs text-slate-500">Network interfaces reporting: {nicList.join(', ')}</p>}
+          </div>
+        )}
       </section>
 
       <section><h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Services</h2><div className="card"><ServiceTable rows={services} showNode={false} canEdit /></div></section>

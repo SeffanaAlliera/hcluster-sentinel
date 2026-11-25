@@ -40,6 +40,16 @@ The agent calls Prometheus' HTTP API on the node (`/api/v1/targets` for target u
 3. Each report: look up credential by id → constant-time hash compare → reject revoked/disabled → the **token** determines the node (payload `node_id` must match).
 4. No endpoint creates nodes except the admin-only, same-origin-checked `POST /api/nodes`. Rotate/revoke from the node page.
 
+## Metrics collected
+Each metric is `(name, label)`; label `''` = node-wide, otherwise a mountpoint or NIC name.
+| Metric | Label | Notes |
+|---|---|---|
+| `cpu_percent`, `cpu_temp_celsius`, `mem_percent`, `mem_available_bytes`, `mem_total_bytes`, `load1`, `load5` | — | CPU temp: node_exporter hwmon, or `/sys` (coretemp/k10temp/thermal_zone) in local fallback; absent (n/a) if no sensor |
+| `disk_percent`, `disk_available_bytes`, `disk_total_bytes` | mountpoint | **every** real drive, auto-detected (ext4/xfs/btrfs/zfs/ntfs…; docker/overlay/tmpfs/boot/bind duplicates skipped) |
+| `net_rx_bytes_per_sec`, `net_tx_bytes_per_sec` | interface; `''` = **sum of all listed NICs** | physical NICs individually + combined total; virtual NICs (lo, docker, veth, br-, virbr, tailscale) excluded |
+
+Service check types: `http`, `tcp`, `dns` (real UDP DNS query: for dnsmasq / Pi-hole resolvers).
+
 ## Data & retention (defaults, table `sentinel_settings`)
 metrics 14 d · service_checks 14 d · heartbeats 7 d · resolved incidents 365 d · rate-limit rows 1 d. At 10 metrics/min/node ≈ 14k rows/day/node (~1 MB/day). Purged daily by `purge_old_data()`.
 Charts bucket server-side (`metric_series`): 1 h→1 min, 6 h→5 min, 24 h→15 min, 7 d→1 h.

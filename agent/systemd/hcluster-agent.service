@@ -28,7 +28,7 @@ TasksMax=64
 # Hardening: outbound-only client that reads /proc and writes one state dir
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+ProtectHome=read-only
 PrivateTmp=yes
 PrivateDevices=yes
 ReadWritePaths=/var/lib/hcluster-agent

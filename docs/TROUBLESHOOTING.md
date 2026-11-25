@@ -17,6 +17,10 @@ Send one report by hand and see the payload: `sudo hcluster-agent once --send`.
 | Prometheus "Unreachable" | `base_url` wrong, or the container's host mapping isn't on 127.0.0.1 (check `docker ps`/`ss -ltn`). `discover` probes 9091 and 9090. Node stays DEGRADED, not offline. |
 | Metric shows "unavailable" | The PromQL returned nothing: exporter missing or label mismatch. Run `discover` (lists metric names + filesystem mountpoints), adjust `expr`/`selector`. Fix mountpoint for disk queries. |
 | Metrics "Partial" forever | Some configured queries have no data (e.g. cAdvisor). Remove them or install the exporter. Not an incident. |
+| CPU temperature shows n/a | No sensor readable: check `discover` ("CPU temperature sensor"). With Prometheus, node_exporter must expose `node_hwmon_temp_celsius` (adjust the `chip=~` regex to a chip name from `curl :9100/metrics | grep hwmon_chip`). Some VMs/boards have none. |
+| A drive is missing | Auto-detection skips non-real filesystems, `/boot`, docker/snap paths and duplicate mounts of one device. Pin drives with `local_metrics.disk_mountpoints`, or adjust the `mountpoint!~` regex in the Prometheus disk queries. node_exporter in Docker: mount `/` with `--path.rootfs`. |
+| Only one NIC / wrong NIC listed | `discover` shows physical vs virtual interfaces. Adjust `local_metrics.net_exclude_prefixes` and the `device!~` regex in the net queries. The combined total sums exactly the NICs listed. |
+| dnsmasq check down | `type: dns` sends a UDP query to host:port. If Pi-hole owns 127.0.0.1:53, point the check at the IP/port dnsmasq really binds (`discover` listing). |
 | CPU/net missing for the first minute (local fallback) | Rates need two samples. |
 | Central Prometheus, several nodes show the same numbers | Set a distinct `prometheus.selector` per node, e.g. `instance="h2:9100"`. |
 | Node never goes OFFLINE | Nothing runs `evaluate_nodes()`. Enable pg_cron (migration 0004) or call `/api/cron/evaluate`; opening the dashboard also triggers it. The UI still *displays* OFFLINE from heartbeat age. |

@@ -35,7 +35,7 @@ class PromResult:
     targets_up: int | None = None
     targets_total: int | None = None
     down_targets: list[str] = field(default_factory=list)
-    values: dict[str, float] = field(default_factory=dict)
+    values: dict[tuple[str, str], float] = field(default_factory=dict)   # (name, label) -> value
     unavailable: list[str] = field(default_factory=list)   # no data / error for these
     errors: dict[str, str] = field(default_factory=dict)
     metrics_status: str = "disabled"       # ok | partial | failed | disabled
@@ -67,8 +67,22 @@ def _reduce(vals: list[float], how: str) -> float:
     return vals[0]
 
 
-def instant_query(cfg: PrometheusConfig, q: PromQuery) -> float | None:
-    """Returns the reduced value, or None if the query produced no data. Raises on API/transport error."""
+MAX_SERIES = 16
+
+
+def _finite(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
+def instant_query(cfg: PrometheusConfig, q: PromQuery) -> list[tuple[str, float]]:
+    """Returns [(label, value)]; [] if the query produced no data. Raises on API/transport error.
+
+    Without `label_by` the result is reduced to one node-wide value (label ''). With `label_by: <prom label>`
+    every series is kept, labelled by that label's value (e.g. mountpoint, device), capped at 16 series."""
     expr = expand_selector(q.expr, cfg.selector)
     url = f"{cfg.base_url}/api/v1/query?" + urllib.parse.urlencode({"query": expr})
     body = _get_json(url, cfg.timeout_seconds)
@@ -76,25 +90,36 @@ def instant_query(cfg: PrometheusConfig, q: PromQuery) -> float | None:
         raise RuntimeError(f"{body.get('errorType', 'error')}: {body.get('error', 'query failed')}"[:200])
     data = body.get("data") or {}
     rtype, result = data.get("resultType"), data.get("result")
-    vals: list[float] = []
+    series: list[tuple[str, float]] = []
     if rtype == "vector":
         for item in result or []:
             try:
-                v = float(item["value"][1])
-            except (KeyError, IndexError, TypeError, ValueError):
+                v = _finite(item["value"][1])
+            except (KeyError, IndexError, TypeError):
                 continue
-            if v == v and v not in (float("inf"), float("-inf")):   # drop NaN/Inf
-                vals.append(v)
+            if v is None:
+                continue
+            lab = ""
+            if q.label_by:
+                lab = str((item.get("metric") or {}).get(q.label_by, ""))
+                if not lab:
+                    continue
+            series.append((lab[:64], v))
     elif rtype == "scalar":
         try:
-            v = float(result[1])
-            if v == v and v not in (float("inf"), float("-inf")):
-                vals.append(v)
-        except (TypeError, ValueError, IndexError):
-            pass
+            v = _finite(result[1])
+        except (TypeError, IndexError):
+            v = None
+        if v is not None:
+            series.append(("", v))
     else:
         raise RuntimeError(f"unsupported resultType {rtype!r}")
-    return _reduce(vals, q.reduce) if vals else None
+    if q.label_by:
+        series = sorted(series)[:MAX_SERIES]
+        if q.sum_total and series:
+            series.append(("", sum(v for _, v in series)))
+        return series
+    return [("", _reduce([v for _, v in series], q.reduce))] if series else []
 
 
 def target_summary(cfg: PrometheusConfig) -> tuple[int, int, list[str]]:
@@ -140,15 +165,16 @@ def collect(cfg: PrometheusConfig) -> PromResult:
     ok = 0
     for q in queries:
         try:
-            v = instant_query(cfg, q)
+            got = instant_query(cfg, q)
         except Exception as e:  # noqa: BLE001
             res.errors[q.name] = f"{e.__class__.__name__}: {e}"[:200]
             res.unavailable.append(q.name)
             continue
-        if v is None:
+        if not got:
             res.unavailable.append(q.name)
         else:
-            res.values[q.name] = v
+            for lab, v in got:
+                res.values[(q.name, lab)] = v
             ok += 1
     if not queries:
         res.metrics_status = "ok"
