@@ -1,0 +1,48 @@
+[Unit]
+Description=hCluster Sentinel monitoring agent
+Documentation=https://github.com/your-org/hcluster-sentinel
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=hcluster
+Group=hcluster
+# HCLUSTER_TOKEN lives here (mode 0640 root:hcluster), never in config.yaml
+EnvironmentFile=/etc/hcluster-agent/agent.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/hcluster-agent/app
+ExecStart=/opt/hcluster-agent/venv/bin/python -m hcluster_agent -c /etc/hcluster-agent/config.yaml run
+Restart=always
+RestartSec=10
+WatchdogSec=180
+TimeoutStopSec=15
+
+# Light footprint
+MemoryMax=96M
+CPUQuota=25%
+TasksMax=64
+
+# Hardening: outbound-only client that reads /proc and writes one state dir
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/hcluster-agent
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

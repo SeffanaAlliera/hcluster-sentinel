@@ -1,0 +1,103 @@
+# hCluster Sentinel agent configuration  (install path: /etc/hcluster-agent/config.yaml)
+#
+# NO SECRETS IN THIS FILE. The node API token lives in /etc/hcluster-agent/agent.env
+# as HCLUSTER_TOKEN=... (mode 0640 root:hcluster) and is loaded by systemd.
+
+node:
+  id: "00000000-0000-0000-0000-000000000000"   # REQUIRED: the Node ID (UUID) shown in the dashboard when you add the node
+
+api:
+  url: "https://YOUR-PROJECT.vercel.app"        # REQUIRED: https only (http allowed solely for localhost development)
+  timeout_seconds: 10
+  max_queue: 720                                # reports kept while offline (720 ≈ 12 h at 60 s); oldest dropped first
+
+intervals:
+  heartbeat_seconds: 60     # max time between reports (a report is also sent when metrics/service intervals elapse)
+  metrics_seconds: 60       # Prometheus + local metrics collection, independent of heartbeat
+
+log_level: INFO
+state_dir: /var/lib/hcluster-agent             # holds the offline backlog queue
+
+# ---------------------------------------------------------------------------
+# Prometheus (OPTIONAL). If it is down the agent keeps running and reports "degraded".
+# Run `hcluster-agent discover` on the node to verify the URL, targets and metric names.
+# ---------------------------------------------------------------------------
+prometheus:
+  enabled: true
+  base_url: "http://127.0.0.1:9091"   # VERIFY: your container maps host 9091 -> container 9090. `discover` probes this.
+  timeout_seconds: 5
+  collect_targets: true               # also report targets up/total (Prometheus target availability)
+  # Extra label matchers injected where $SEL appears, e.g.  instance="h1:9100"   or   instance=~"h1.*"
+  # Leave empty when Prometheus scrapes only this node. REQUIRED when a central Prometheus scrapes several nodes.
+  selector: ""
+  # Allowlist of queries. name -> PromQL expression returning ONE value (use reduce if it can return several).
+  # These are STANDARD node_exporter metric names, shipped as templates. If an exporter/metric does not exist,
+  # the query returns nothing and the metric is reported as UNAVAILABLE (never estimated).
+  queries:
+    - { name: cpu_percent,           expr: '100 - (avg(rate(node_cpu_seconds_total{mode="idle",$SEL}[2m])) * 100)' }
+    - { name: mem_percent,           expr: '100 * (1 - node_memory_MemAvailable_bytes{$SEL} / node_memory_MemTotal_bytes{$SEL})' }
+    - { name: mem_available_bytes,   expr: 'node_memory_MemAvailable_bytes{$SEL}' }
+    - { name: mem_total_bytes,       expr: 'node_memory_MemTotal_bytes{$SEL}' }
+    # Change mountpoint="/" if `discover` shows your root filesystem under a different mountpoint.
+    - { name: disk_percent,          expr: '100 * (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs",$SEL} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs",$SEL})' }
+    - { name: disk_available_bytes,  expr: 'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs",$SEL}' }
+    - { name: load1,                 expr: 'node_load1{$SEL}' }
+    - { name: load5,                 expr: 'node_load5{$SEL}' }
+    - { name: net_rx_bytes_per_sec,  expr: 'sum(rate(node_network_receive_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m]))' }
+    - { name: net_tx_bytes_per_sec,  expr: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m]))' }
+    # Example (only if cAdvisor is installed; verify with `discover`):
+    # - { name: containers_cpu_cores, expr: 'sum(rate(container_cpu_usage_seconds_total{name!=""}[2m]))' }
+    # - { name: containers_mem_bytes, expr: 'sum(container_memory_working_set_bytes{name!=""})' }
+
+# Local /proc metrics: used ONLY for metrics Prometheus can't provide (or when Prometheus is disabled).
+local_metrics:
+  fallback: true
+  disk_mountpoint: "/"
+  net_exclude_prefixes: [lo, docker, veth, br-, virbr, tailscale]
+
+# ---------------------------------------------------------------------------
+# Service checks. No credentials are needed or supported.
+# The endpoints below are the services' well-known UPSTREAM DEFAULTS, not facts about your host.
+# VERIFY each one with `sudo hcluster-agent discover` (it lists listening ports and probes candidates),
+# then edit url/port here. A wrong value simply shows as "down" in the dashboard.
+# ---------------------------------------------------------------------------
+services:
+  - key: jellyfin                 # stable id: lowercase letters, digits, - _ .
+    name: Jellyfin
+    type: http
+    url: "http://127.0.0.1:8096/health"          # VERIFY port (default 8096)
+    expected_status: "200-399"                    # int, "200-299", or a list
+    # expect_body_contains: "Healthy"
+    timeout_seconds: 5
+    interval_seconds: 60
+    degraded_after_ms: 3000                       # slower than this => DEGRADED (null disables)
+    retries: 1                                    # re-try once before reporting DOWN
+
+  - key: immich
+    name: Immich (Docker)
+    type: http
+    url: "http://127.0.0.1:2283/api/server/ping"  # VERIFY published host port of the Immich server container
+    expected_status: 200
+
+  - key: pihole
+    name: Pi-hole
+    type: http
+    url: "http://127.0.0.1/admin/"                # VERIFY: web UI port/path (80 or 8080 are common)
+    # verify_tls: false                           # for https:// URLs with self-signed certs
+
+  - key: syncthing
+    name: Syncthing
+    type: http
+    url: "http://127.0.0.1:8384/rest/noauth/health"   # VERIFY: GUI listen address (default 127.0.0.1:8384)
+
+  - key: samba
+    name: Samba
+    type: tcp
+    host: 127.0.0.1
+    port: 445                                     # VERIFY with `discover`
+
+  # Optional: show where a check goes only to admins. Set report_target: false to never send the URL/host.
+  # - key: example
+  #   type: http
+  #   url: http://127.0.0.1:1234/
+  #   report_target: false
