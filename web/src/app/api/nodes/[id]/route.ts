@@ -42,6 +42,25 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if ('error' in a) return a.error;
   const { id } = await params;
   if (!uuid.safeParse(id).success) return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  const { error } = await adminClient().from('nodes').delete().eq('id', id);   // cascades: credentials, services, metrics, incidents
-  return error ? NextResponse.json({ error: 'delete_failed' }, { status: 500 }) : NextResponse.json({ ok: true });
+  const { error } = await adminClient()
+  .from('nodes')
+  .delete()
+  .eq('id', id);
+
+if (error) {
+  console.error('[NODE_DELETE_FAILED]', {
+    nodeId: id,
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+  });
+
+  return NextResponse.json(
+    { error: 'delete_failed' },
+    { status: 500 }
+  );
+}
+
+return NextResponse.json({ ok: true });
 }
