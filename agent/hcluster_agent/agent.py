@@ -106,6 +106,8 @@ class Agent:
                     values.extend(_entry(k[0], k[1], v, "local") for k, v in local.items() if k[0] == name)
                     if name in unavailable:
                         unavailable.remove(name)
+            if "cpu_temp_celsius" not in {e["name"] for e in values} and "cpu_temp_celsius" not in unavailable:
+                unavailable.append("cpu_temp_celsius")        # nothing could read it: say so instead of staying silent
             for name, err in pr.errors.items():
                 log.debug("query %s failed: %s", name, err)
             return {"status": pr.metrics_status,
@@ -118,7 +120,8 @@ class Agent:
                 values.append(_entry(name, label, v, "local"))
             core = {"mem_percent", "disk_percent"}
             status = "ok" if core & {k[0] for k in local} else "failed"
-            return {"status": status, "prometheus": {"status": "disabled"}, "values": values, "unavailable": []}
+            miss = ["cpu_temp_celsius"] if ("cpu_temp_celsius", "") not in local else []
+            return {"status": status, "prometheus": {"status": "disabled"}, "values": values, "unavailable": miss}
         return {"status": "disabled", "prometheus": {"status": "disabled"}, "values": [], "unavailable": []}
 
     # ---- one scheduling step ------------------------------------------

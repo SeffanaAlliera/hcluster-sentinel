@@ -49,7 +49,15 @@ export default async function NodePage({ params, searchParams }: { params: Promi
   const cpuC = build([{ name: 'cpu_percent', label: '', legend: 'CPU', color: '#38bdf8' }]);
   const tempC = build([{ name: 'cpu_temp_celsius', label: '', legend: 'CPU temp', color: '#fb923c' }]);
   const memC = build([{ name: 'mem_percent', label: '', legend: 'Memory', color: '#a78bfa' }]);
-  const diskC = build(driveMounts.map((m, i) => ({ name: 'disk_percent', label: m, legend: m, color: COLORS[i % COLORS.length] })));
+  const sizeOf = (m: string) => driveList.find((d) => d.mount === m)?.total;
+  const diskC = build(driveMounts.map((m, i) => ({ name: 'disk_percent', label: m, legend: sizeOf(m) ? `${m} · ${bytes(sizeOf(m))}` : m, color: COLORS[i % COLORS.length] })));
+  const ioMounts = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('disk_read_bytes_per_sec|') || k.startsWith('disk_write_bytes_per_sec|')).map((k) => k.slice(k.indexOf('|') + 1)))]
+    .filter((m) => currentMounts.size === 0 || currentMounts.has(m)).sort();
+  const readC = build(ioMounts.map((m, i) => ({ name: 'disk_read_bytes_per_sec', label: m, legend: m, color: COLORS[i % COLORS.length] })));
+  const writeC = build(ioMounts.map((m, i) => ({ name: 'disk_write_bytes_per_sec', label: m, legend: m, color: COLORS[i % COLORS.length] })));
+  const cpuName = node.cpu_model ? `${node.cpu_model}${node.cpu_cores ? ` · ${node.cpu_cores} threads` : ''}` : undefined;
+  const ramTotal = pick(latest, 'mem_total_bytes');
+  const ramName = ramTotal != null ? `Total RAM ${bytes(ramTotal)}` : undefined;
   const netC = build([{ name: 'net_rx_bytes_per_sec', label: '', legend: 'Receive (all NICs)', color: '#34d399' }, { name: 'net_tx_bytes_per_sec', label: '', legend: 'Transmit (all NICs)', color: '#f472b6' }]);
   const nicNames = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('net_rx_bytes_per_sec|')).map((k) => k.slice('net_rx_bytes_per_sec|'.length)))].sort();
   const nicCharts = nicNames.map((n) => ({ n, c: build([{ name: 'net_rx_bytes_per_sec', label: n, legend: 'Receive', color: '#34d399' }, { name: 'net_tx_bytes_per_sec', label: n, legend: 'Transmit', color: '#f472b6' }]) }));
@@ -96,10 +104,12 @@ export default async function NodePage({ params, searchParams }: { params: Promi
       <section>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Metrics</h2><RangeTabs base={`/nodes/${id}`} current={range} /></div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <MetricChart title="CPU utilisation" unit="percent" spanMs={span} {...cpuC} />
-          <MetricChart title="CPU temperature" unit="celsius" spanMs={span} {...tempC} />
-          <MetricChart title="Memory utilisation" unit="percent" spanMs={span} {...memC} />
+          <MetricChart title="CPU utilisation" subtitle={cpuName} unit="percent" spanMs={span} {...cpuC} />
+          <MetricChart title="CPU temperature" subtitle={cpuName} unit="celsius" spanMs={span} {...tempC} />
+          <MetricChart title="Memory utilisation" subtitle={ramName} unit="percent" spanMs={span} {...memC} />
           <MetricChart title={`Disk utilisation${driveMounts.length > 1 ? ` (${driveMounts.length} drives)` : ''}`} unit="percent" spanMs={span} {...diskC} />
+          <MetricChart title="Disk read throughput (per drive)" unit="bytes" spanMs={span} {...readC} />
+          <MetricChart title="Disk write throughput (per drive)" unit="bytes" spanMs={span} {...writeC} />
           <MetricChart title="Network throughput — all NICs combined" unit="bytes" spanMs={span} {...netC} />
           {nicCharts.length > 1 && nicCharts.map(({ n, c }) => <MetricChart key={n} title={`Network — ${n}`} unit="bytes" spanMs={span} {...c} />)}
         </div>

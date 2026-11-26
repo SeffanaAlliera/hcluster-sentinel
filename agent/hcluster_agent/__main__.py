@@ -47,6 +47,14 @@ def main(argv=None) -> int:
         time.sleep(1.0)
         rep = agent.step(force=True)
         print(json.dumps(rep, indent=2))
+        from .localmetrics import list_sensors, read_cpu_temp
+        mr = (rep or {}).get("metrics_report") or {}
+        got = [v for v in mr.get("values", []) if v["name"] == "cpu_temp_celsius"]
+        print(f"\n-- diagnosis: agent {__version__}; local fallback {'on' if cfg.local_fallback else 'OFF (set local_metrics.fallback: true)'}", file=sys.stderr)
+        shown = f"{got[0]['value']} (source {got[0]['source']})" if got else "MISSING"
+        print(f"-- cpu_temp_celsius in this report: {shown}", file=sys.stderr)
+        print(f"-- local sensor read: {read_cpu_temp()}   unavailable list: {mr.get('unavailable')}", file=sys.stderr)
+        print("-- sensors seen: " + ("; ".join(list_sensors()) or "none"), file=sys.stderr)
         if args.send:
             agent.reporter.flush()
             print(f"queued after send: {len(agent.reporter.queue)} (0 = delivered)", file=sys.stderr)

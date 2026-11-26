@@ -231,7 +231,16 @@ def load_config(path: str, env: dict[str, str] | None = None) -> Config:
     except OSError as e:
         raise ConfigError(f"cannot read config {path}: {e}") from e
     except yaml.YAMLError as e:
-        raise ConfigError(f"invalid YAML in {path}: {e}") from e
+        where = ""
+        mark = getattr(e, "problem_mark", None)
+        if mark is not None:
+            try:
+                lines = open(path, encoding="utf-8").read().splitlines()
+                where = "".join(f"\n  {n:>4} | {lines[n - 1]}" for n in range(max(1, mark.line - 1), min(len(lines), mark.line + 3) + 1))
+                where = f"\nnear line {mark.line + 1}:{where}\n(hint: a long `- {{ name: ..., expr: '...' }}` entry must stay on ONE line; indentation must use spaces)"
+            except OSError:
+                pass
+        raise ConfigError(f"invalid YAML in {path}: {e}{where}") from e
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a mapping")
 

@@ -6,13 +6,13 @@ type Point = Record<string, number | null> & { t: number };
 
 const fmtBytes = (n: number) => { const u = ['B/s', 'KB/s', 'MB/s', 'GB/s']; let i = 0, v = n; while (v >= 1024 && i < 3) { v /= 1024; i++; } return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`; };
 
-export function MetricChart({ title, data, series, unit, spanMs }: { title: string; data: Point[]; series: ChartSeries[]; unit: 'percent' | 'bytes' | 'celsius'; spanMs: number }) {
+export function MetricChart({ title, subtitle, data, series, unit, spanMs }: { title: string; subtitle?: string; data: Point[]; series: ChartSeries[]; unit: 'percent' | 'bytes' | 'celsius'; spanMs: number }) {
   const tick = (t: number) => { const d = new Date(t); return spanMs > 86_400_000 * 1.5 ? `${d.getUTCMonth() + 1}/${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2, '0')}h` : `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`; };
   const fmt = (v: number) => (unit === 'percent' ? `${v.toFixed(1)}%` : unit === 'celsius' ? `${v.toFixed(1)}°C` : fmtBytes(v));
   const axis = (v: number) => (unit === 'percent' ? `${v}%` : unit === 'celsius' ? `${v}°` : fmtBytes(v));
   return (
     <div className="card p-4">
-      <div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-medium text-slate-200">{title}</h3><span className="text-[11px] text-slate-500">UTC</span></div>
+      <div className="mb-2 flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="text-sm font-medium text-slate-200">{title}</h3>{subtitle && <p className="truncate text-xs text-slate-400" title={subtitle}>{subtitle}</p>}</div><span className="text-[11px] text-slate-500">UTC</span></div>
       {data.length === 0 ? (
         <div className="flex h-48 items-center justify-center text-sm text-slate-500">No data for this range</div>
       ) : (

@@ -17,6 +17,12 @@ cp "$SRC/requirements.txt" "$INSTALL_DIR/app/requirements.txt"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade -r "$INSTALL_DIR/app/requirements.txt"
 PYTHONPATH="$INSTALL_DIR/app" HCLUSTER_TOKEN=check "$INSTALL_DIR/venv/bin/python" -c 'import hcluster_agent; print("agent version", hcluster_agent.__version__)'
 if [[ "$SKIP_SYSTEMD" != "1" ]]; then
+  # never restart into a broken config: validate first and keep the running agent if it is invalid
+  if ! PYTHONPATH="$INSTALL_DIR/app" "$INSTALL_DIR/venv/bin/python" -m hcluster_agent -c "$CONF_DIR/config.yaml" check-config; then
+    echo "" >&2
+    echo "NOT restarting: $CONF_DIR/config.yaml has an error (shown above). Fix it, then: sudo systemctl restart hcluster-agent" >&2
+    exit 1
+  fi
   sed -e "s|/opt/hcluster-agent|$INSTALL_DIR|g" -e "s|/etc/hcluster-agent|$CONF_DIR|g" "$SRC/systemd/hcluster-agent.service" > "$UNIT_DIR/hcluster-agent.service"
   systemctl daemon-reload
   systemctl restart hcluster-agent.service

@@ -124,6 +124,8 @@ begin
       os             = coalesce(left(v_host->>'os', 120), os),
       arch           = coalesce(left(v_host->>'arch', 40), arch),
       kernel         = coalesce(left(v_host->>'kernel', 80), kernel),
+      cpu_model      = coalesce(left(v_host->>'cpu_model', 120), cpu_model),
+      cpu_cores      = coalesce(nullif(v_host->>'cpu_cores', '')::integer, cpu_cores),
       agent_version  = coalesce(left(p_report #>> '{agent,version}', 32), agent_version),
       uptime_seconds = coalesce(nullif(v_host->>'uptime_seconds', '')::bigint, uptime_seconds)
     where id = p_node_id;

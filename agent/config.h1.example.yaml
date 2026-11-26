@@ -100,7 +100,7 @@ services:
   - key: syncthing
     name: Syncthing
     type: http
-    url: "http://127.0.0.1:8384/rest/noauth/health"   # VERIFY: GUI listen address (default 127.0.0.1:8384)
+    url: "http://127.0.0.1:8384/rest/noauth/health"   # VERIFY: GUI address. If the GUI uses HTTPS, write https:// AND add verify_tls: false below
 
   - key: samba
     name: Samba
@@ -120,6 +120,19 @@ services:
     type: http
     url: "http://127.0.0.1:5000/"                    # VERIFY: the host port you mapped for the gptwol container
     expected_status: "200-399"
+
+  # The monitoring stack itself. Prometheus is published on host port 9091 (container 9090); Grafana on 3000.
+  - key: prometheus
+    name: Prometheus
+    type: http
+    url: "http://127.0.0.1:9091/-/healthy"          # VERIFY: your published host port (9091 in this setup)
+    expected_status: 200
+
+  - key: grafana
+    name: Grafana
+    type: http
+    url: "http://127.0.0.1:3000/api/health"         # VERIFY: port 3000; this endpoint needs no login
+    expected_status: 200
 
   # Cockpit web console (listens on 9090 as https with a self-signed cert). VERIFY with `discover`.
   - key: cockpit

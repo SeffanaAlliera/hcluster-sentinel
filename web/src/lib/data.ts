@@ -69,7 +69,7 @@ export async function overview(sb: SupabaseClient) {
   };
 }
 
-export const SERIES_METRICS = ['cpu_percent', 'cpu_temp_celsius', 'mem_percent', 'disk_percent', 'net_rx_bytes_per_sec', 'net_tx_bytes_per_sec'] as const;
+export const SERIES_METRICS = ['cpu_percent', 'cpu_temp_celsius', 'mem_percent', 'disk_percent', 'net_rx_bytes_per_sec', 'net_tx_bytes_per_sec', 'disk_read_bytes_per_sec', 'disk_write_bytes_per_sec'] as const;
 const PAGE = 1000;   // PostgREST returns at most 1000 rows per request; labeled series can exceed that on 7d ranges
 
 export async function metricSeries(sb: SupabaseClient, nodeId: string, range: RangeKey) {

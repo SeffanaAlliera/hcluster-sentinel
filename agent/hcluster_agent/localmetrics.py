@@ -59,11 +59,20 @@ def _unescape_mount(s: str) -> str:
     return s.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
 
 
-def list_drives(proc: str = "/proc", only: list[str] | None = None, exclude_prefixes: list[str] | None = None) -> list[str]:
-    """Mountpoints of real, distinct drives. Bind mounts / btrfs subvolumes of one device count once."""
+def list_drive_devices(proc: str = "/proc", only: list[str] | None = None,
+                       exclude_prefixes: list[str] | None = None) -> list[tuple[str, str]]:
+    """[(mountpoint, device)] of real, distinct drives. Bind mounts / btrfs subvolumes of one device count once."""
     excl = DEFAULT_DISK_EXCLUDE if exclude_prefixes is None else exclude_prefixes
     if only:
-        return list(only)
+        devs: dict[str, str] = {}
+        try:
+            for ln in _read(f"{proc}/mounts").splitlines():
+                f = ln.split()
+                if len(f) >= 2:
+                    devs[_unescape_mount(f[1])] = f[0]
+        except OSError:
+            pass
+        return [(m, devs.get(m, "")) for m in only]
     seen: dict[str, str] = {}
     try:
         lines = _read(f"{proc}/mounts").splitlines()
@@ -80,7 +89,30 @@ def list_drives(proc: str = "/proc", only: list[str] | None = None, exclude_pref
             continue
         if dev not in seen or len(mnt) < len(seen[dev]):
             seen[dev] = mnt
-    return sorted(seen.values())
+    return sorted(((m, d) for d, m in seen.items()), key=lambda x: x[0])
+
+
+def list_drives(proc: str = "/proc", only: list[str] | None = None, exclude_prefixes: list[str] | None = None) -> list[str]:
+    """Mountpoints of real, distinct drives."""
+    return [m for m, _ in list_drive_devices(proc, only, exclude_prefixes)]
+
+
+def block_name(dev: str) -> str:
+    """Kernel block-device name as used in /proc/diskstats (/dev/mapper/x -> dm-0, /dev/disk/by-uuid/.. -> sdb1)."""
+    return os.path.basename(os.path.realpath(dev)) if dev.startswith("/") else ""
+
+
+def read_diskstats(proc: str = "/proc") -> dict[str, tuple[int, int]]:
+    """{device: (bytes_read, bytes_written)}; /proc/diskstats counts 512-byte sectors regardless of the drive."""
+    out: dict[str, tuple[int, int]] = {}
+    for line in _read(f"{proc}/diskstats").splitlines():
+        f = line.split()
+        if len(f) >= 10:
+            try:
+                out[f[2]] = (int(f[5]) * 512, int(f[9]) * 512)
+            except ValueError:
+                continue
+    return out
 
 
 def read_cpu_temp(sys_root: str = "/sys") -> float | None:
@@ -167,6 +199,7 @@ class LocalCollector:
         self.clock = clock
         self._cpu: tuple[int, int] | None = None
         self._net: tuple[dict[str, tuple[int, int]], float] | None = None
+        self._io: tuple[dict[str, tuple[int, int]], float] | None = None
 
     def collect(self) -> dict[Key, float]:
         out: dict[Key, float] = {}
@@ -189,7 +222,20 @@ class LocalCollector:
             out[("mem_percent", "")] = round(100.0 * (total - avail) / total, 2)
         except (OSError, KeyError, ZeroDivisionError, ValueError):
             pass
-        for mnt in list_drives(self.proc, self.mountpoints, self.disk_exclude):
+        drive_devs = list_drive_devices(self.proc, self.mountpoints, self.disk_exclude)
+        try:                                                  # per-drive read/write throughput
+            io_now, t_io = read_diskstats(self.proc), self.clock()
+            if self._io is not None and t_io > self._io[1]:
+                io_prev, t0 = self._io
+                for mnt, dev in drive_devs:
+                    n = block_name(dev)
+                    if n in io_now and n in io_prev and io_now[n][0] >= io_prev[n][0] and io_now[n][1] >= io_prev[n][1]:
+                        out[("disk_read_bytes_per_sec", mnt)] = round((io_now[n][0] - io_prev[n][0]) / (t_io - t0), 2)
+                        out[("disk_write_bytes_per_sec", mnt)] = round((io_now[n][1] - io_prev[n][1]) / (t_io - t0), 2)
+            self._io = (io_now, t_io)
+        except (OSError, ValueError):
+            pass
+        for mnt, _dev in drive_devs:
             try:
                 st = os.statvfs(mnt)
             except OSError:
@@ -239,6 +285,19 @@ def host_info(proc: str = "/proc") -> dict:
                 break
     except OSError:
         info["os"] = platform.system()
+    try:
+        model, threads = "", 0
+        for line in _read(f"{proc}/cpuinfo").splitlines():
+            if line.startswith("model name") and not model:
+                model = " ".join(line.split(":", 1)[1].split())
+            elif line.startswith("processor"):
+                threads += 1
+        if model:
+            info["cpu_model"] = model[:120]
+        if threads:
+            info["cpu_cores"] = threads                  # logical CPUs (threads)
+    except OSError:
+        pass
     try:
         info["uptime_seconds"] = int(float(_read(f"{proc}/uptime").split()[0]))
     except (OSError, ValueError, IndexError):

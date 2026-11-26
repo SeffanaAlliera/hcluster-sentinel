@@ -91,7 +91,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(generic.services, [])                       # new nodes start with NO assumed services
         self.assertGreaterEqual(len(generic.prometheus.queries), 10)
         h1 = load("config.h1.example.yaml")
-        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq-dhcp", "cockpit"})
+        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq-dhcp", "cockpit", "prometheus", "grafana"})
         self.assertEqual(next(x for x in h1.services if x.key == "dnsmasq-dhcp").type, "process")
         names = {(q.name, q.label_by) for q in generic.prometheus.queries}
         self.assertIn(("disk_percent", "mountpoint"), names)
@@ -312,6 +312,32 @@ class LocalMetricsTests(unittest.TestCase):
         lc = LocalCollector(["/nonexistent-mount"], [], proc="/nonexistent-proc", sys_root="/nonexistent")
         self.assertEqual(lc.collect(), {})
 
+    def test_disk_io_per_drive_and_cpu_model(self):
+        t = [100.0]
+        lc = LocalCollector([], ["lo"], clock=lambda: t[0], sys_root="/nonexistent")
+        d = self.fake_proc((1, 2, 3), mounts="/dev/sdb1 /mnt/media ext4 rw 0 0\n/dev/mapper/vg-root / ext4 rw 0 0\n")
+        lc.proc = d
+        def stats(rd, wr):   # sectors of 512 B; sdb1 plus a device-mapper volume (dm-0 is what /dev/mapper/vg-root resolves to)
+            open(f"{d}/diskstats", "w").write(f"   8  17 sdb1 1 0 {rd} 0 1 0 {wr} 0 0 0 0\n 253   0 dm-0 1 0 {rd * 2} 0 1 0 {wr * 2} 0 0 0 0\n")
+        stats(1000, 400); first = lc.collect()
+        self.assertNotIn(("disk_read_bytes_per_sec", "/mnt/media"), first)          # needs two samples
+        stats(1000 + 4096, 400 + 2048); t[0] = 102.0
+        out = lc.collect()
+        self.assertEqual(out[("disk_read_bytes_per_sec", "/mnt/media")], 1048576.0)  # 4096*512 B / 2 s
+        self.assertEqual(out[("disk_write_bytes_per_sec", "/mnt/media")], 524288.0)
+        self.assertNotIn(("disk_read_bytes_per_sec", "/"), out)                      # /dev/mapper/vg-root is not in this fake diskstats: not invented
+        stats(10, 10); t[0] = 104.0                                                  # counter reset: skipped, not negative
+        self.assertNotIn(("disk_read_bytes_per_sec", "/mnt/media"), lc.collect())
+
+    def test_host_info_has_cpu_model(self):
+        from hcluster_agent.localmetrics import host_info
+        d = tempfile.mkdtemp()
+        open(f"{d}/cpuinfo", "w").write("processor\t: 0\nmodel name\t: Intel(R)  Celeron(R) CPU  N4100 @ 1.10GHz\nprocessor\t: 1\nmodel name\t: Intel(R) Celeron(R) CPU N4100 @ 1.10GHz\n")
+        open(f"{d}/uptime", "w").write("10.0 5.0\n")
+        h = host_info(d)
+        self.assertEqual(h["cpu_model"], "Intel(R) Celeron(R) CPU N4100 @ 1.10GHz")
+        self.assertEqual(h["cpu_cores"], 2)
+
     def test_network_is_one_overall_metric_by_default(self):
         t = [100.0]
         lc = LocalCollector(["/"], ["lo"], clock=lambda: t[0], sys_root="/nonexistent")
@@ -353,6 +379,18 @@ class DriveMergeTests(unittest.TestCase):
         got = self.run_agent({("cpu_percent", ""): 5.0}, ) 
         self.assertEqual(got[("cpu_percent", "")], "prometheus")
         self.assertEqual(got[("mem_percent", "")], "local")          # no mem query configured -> kernel value, not silence
+
+    def test_missing_temperature_is_reported_unavailable(self):
+        import hcluster_agent.agent as A
+        from hcluster_agent.prometheus import PromResult
+        ag = Agent(mkcfg(prometheus=C.PrometheusConfig(enabled=True)))
+        ag.local.sys_root = "/nonexistent"
+        orig = A.prom_collect
+        A.prom_collect = lambda _c: PromResult(prom_status="ok", values={("cpu_percent", ""): 1.0}, metrics_status="ok")
+        try:
+            self.assertIn("cpu_temp_celsius", ag.collect_metrics()["unavailable"])
+        finally:
+            A.prom_collect = orig
 
     def test_missing_drives_added_and_efi_dropped(self):
         got = self.run_agent({("disk_percent", "/"): 40.0, ("disk_percent", "/boot/efi"): 2.0,
@@ -595,7 +633,7 @@ class AgentTests(unittest.TestCase):
         agent, t = self.build(purl, fallback=False)
         mr = agent.step(force=True)["metrics_report"]
         self.assertEqual(mr["status"], "partial")
-        self.assertEqual(mr["unavailable"], ["net_rx_bytes_per_sec"])
+        self.assertEqual(sorted(mr["unavailable"]), ["cpu_temp_celsius", "net_rx_bytes_per_sec"])   # temperature is also unavailable: no query, no fallback
         self.assertNotIn("net_rx_bytes_per_sec", [v["name"] for v in mr["values"]])
 
     def test_prometheus_disabled_uses_local(self):
