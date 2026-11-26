@@ -16,8 +16,9 @@ Key = tuple[str, str]
 
 REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "ntfs", "ntfs3", "fuseblk", "vfat", "exfat", "f2fs", "jfs", "reiserfs"}
 DEFAULT_DISK_EXCLUDE = ["/boot", "/var/lib/docker", "/var/lib/containers", "/var/snap", "/snap", "/run", "/sys", "/proc", "/dev"]
-CPU_HWMON_CHIPS = {"coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-thermal", "soc_thermal"}
+CPU_HWMON_CHIPS = {"coretemp", "k10temp", "zenpower", "cpu_thermal", "cpu-thermal", "soc_thermal", "cpu", "x86_pkg_temp"}
 CPU_THERMAL_TYPES = {"x86_pkg_temp", "cpu-thermal", "cpu_thermal", "soc_thermal"}
+FALLBACK_THERMAL_TYPES = {"acpitz"}      # board/ACPI zone: used only when no CPU-specific sensor exists
 
 
 def _read(path: str) -> str:
@@ -116,17 +117,53 @@ def read_cpu_temp(sys_root: str = "/sys") -> float | None:
                 return sane(int(_read(f"{z}/temp").strip()) / 1000.0)
         except (OSError, ValueError):
             continue
+    for z in sorted(glob.glob(f"{sys_root}/class/thermal/thermal_zone*")):      # last resort: ACPI zone
+        try:
+            if _read(f"{z}/type").strip() in FALLBACK_THERMAL_TYPES:
+                v = sane(int(_read(f"{z}/temp").strip()) / 1000.0)
+                if v is not None:
+                    return v
+        except (OSError, ValueError):
+            continue
     return None
+
+
+def list_sensors(sys_root: str = "/sys") -> list[str]:
+    """Every temperature sensor the kernel exposes, for `discover` troubleshooting."""
+    out: list[str] = []
+    for hw in sorted(glob.glob(f"{sys_root}/class/hwmon/hwmon*")):
+        try:
+            chip = _read(f"{hw}/name").strip()
+        except OSError:
+            chip = "?"
+        for f in sorted(glob.glob(f"{hw}/temp*_input")):
+            try:
+                lab = ""
+                try:
+                    lab = _read(f.replace("_input", "_label")).strip()
+                except OSError:
+                    pass
+                out.append(f"hwmon {chip}/{lab or f.rsplit('/', 1)[1]} = {int(_read(f).strip()) / 1000.0:.1f} °C")
+            except (OSError, ValueError):
+                continue
+    for z in sorted(glob.glob(f"{sys_root}/class/thermal/thermal_zone*")):
+        try:
+            out.append(f"thermal_zone type={_read(f'{z}/type').strip()} = {int(_read(f'{z}/temp').strip()) / 1000.0:.1f} °C")
+        except (OSError, ValueError):
+            continue
+    return out
 
 
 class LocalCollector:
     def __init__(self, mountpoints: list[str] | None = None, exclude: list[str] | None = None, proc: str = "/proc",
-                 clock: Callable[[], float] = time.monotonic, disk_exclude: list[str] | None = None, sys_root: str = "/sys"):
+                 clock: Callable[[], float] = time.monotonic, disk_exclude: list[str] | None = None, sys_root: str = "/sys",
+                 net_per_interface: bool = False):
         self.mountpoints = mountpoints            # None/[] = auto-detect every real drive
         self.exclude = exclude or []
         self.disk_exclude = disk_exclude
         self.proc = proc
         self.sys_root = sys_root
+        self.net_per_interface = net_per_interface
         self.clock = clock
         self._cpu: tuple[int, int] | None = None
         self._net: tuple[dict[str, tuple[int, int]], float] | None = None
@@ -179,11 +216,12 @@ class LocalCollector:
                 for ifc, (rx, tx) in cur.items():
                     if ifc in prev and rx >= prev[ifc][0] and tx >= prev[ifc][1]:
                         r, t = (rx - prev[ifc][0]) / dt, (tx - prev[ifc][1]) / dt
-                        out[("net_rx_bytes_per_sec", ifc)] = round(r, 2)
-                        out[("net_tx_bytes_per_sec", ifc)] = round(t, 2)
+                        if self.net_per_interface:
+                            out[("net_rx_bytes_per_sec", ifc)] = round(r, 2)
+                            out[("net_tx_bytes_per_sec", ifc)] = round(t, 2)
                         tot_rx += r
                         tot_tx += t
-                if any(k[0] == "net_rx_bytes_per_sec" for k in out):
+                if any(ifc in prev for ifc in cur):
                     out[("net_rx_bytes_per_sec", "")] = round(tot_rx, 2)       # all selected NICs combined
                     out[("net_tx_bytes_per_sec", "")] = round(tot_tx, 2)
             self._net = (cur, now)

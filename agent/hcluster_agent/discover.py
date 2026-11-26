@@ -147,7 +147,7 @@ def discover(prom_urls: list[str], proc: str = "/proc") -> int:
             print("  → node_exporter metrics not found: either install node_exporter or rely on local /proc fallback metrics.")
 
     print("\n-- Drives that will be monitored (local /proc/mounts auto-detection) --")
-    from .localmetrics import list_drives, read_cpu_temp, read_net_bytes
+    from .localmetrics import list_drives, list_sensors, read_cpu_temp, read_net_bytes
     for mnt in list_drives(proc):
         try:
             st = os.statvfs(mnt)
@@ -156,7 +156,9 @@ def discover(prom_urls: list[str], proc: str = "/proc") -> int:
             print(f"    {mnt:30s} (cannot stat: {e})")
     t = read_cpu_temp()
     print(f"\n-- CPU temperature sensor: {'%.1f °C' % t if t is not None else 'none found in /sys (coretemp/k10temp/thermal_zone)'}")
-    print("\n-- Network interfaces (physical NICs are reported individually; virtual ones are excluded by prefix) --")
+    for s in list_sensors() or ["(the kernel exposes no temperature sensors; try `sudo modprobe coretemp`)"]:
+        print(f"    {s}")
+    print("\n-- Network interfaces (all non-virtual-prefix NICs are summed into ONE overall throughput metric) --")
     try:
         for ifc in sorted(read_net_bytes(proc, [])):
             virtual = os.path.exists(f"/sys/devices/virtual/net/{ifc}")

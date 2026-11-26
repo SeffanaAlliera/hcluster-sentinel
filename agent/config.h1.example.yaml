@@ -50,8 +50,8 @@ prometheus:
     - { name: load1,                 expr: 'node_load1{$SEL}' }
     - { name: load5,                 expr: 'node_load5{$SEL}' }
     # Network: per physical NIC (label = device) AND the combined total (sum_total). Virtual NICs are excluded by the regex.
-    - { name: net_rx_bytes_per_sec, label_by: device, sum_total: true, expr: 'rate(node_network_receive_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m])' }
-    - { name: net_tx_bytes_per_sec, label_by: device, sum_total: true, expr: 'rate(node_network_transmit_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m])' }
+    - { name: net_rx_bytes_per_sec, expr: 'sum(rate(node_network_receive_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m]))' }
+    - { name: net_tx_bytes_per_sec, expr: 'sum(rate(node_network_transmit_bytes_total{device!~"lo|docker.*|veth.*|br-.*|virbr.*|tailscale.*",$SEL}[2m]))' }
     # Example (only if cAdvisor is installed; verify with `discover`):
     # - { name: containers_cpu_cores, expr: 'sum(rate(container_cpu_usage_seconds_total{name!=""}[2m]))' }
     # - { name: containers_mem_bytes, expr: 'sum(container_memory_working_set_bytes{name!=""})' }
@@ -62,7 +62,9 @@ local_metrics:
   # Drives: auto-detects every real mounted drive (ext4/xfs/btrfs/zfs/ntfs/...). To pin an explicit list instead:
   # disk_mountpoints: ["/", "/mnt/media"]
   # disk_exclude_prefixes: ["/boot", "/var/lib/docker", "/snap"]     # default list shown; mounts under these are skipped
-  # Network: every NIC except these prefixes is reported individually + as a combined total.
+  # Network: ONE overall throughput metric (all NICs except these prefixes, summed). Set net_per_interface: true
+  # to also report each NIC separately.
+  # net_per_interface: false
   net_exclude_prefixes: [lo, docker, veth, br-, virbr, tailscale]
 
 # ---------------------------------------------------------------------------
@@ -117,6 +119,14 @@ services:
     name: GPTWOL (Docker)
     type: http
     url: "http://127.0.0.1:5000/"                    # VERIFY: the host port you mapped for the gptwol container
+    expected_status: "200-399"
+
+  # Cockpit web console (listens on 9090 as https with a self-signed cert). VERIFY with `discover`.
+  - key: cockpit
+    name: Cockpit
+    type: http
+    url: "https://127.0.0.1:9090/"
+    verify_tls: false                                # self-signed certificate on localhost
     expected_status: "200-399"
 
   # dnsmasq used as a DHCP-only server (port=0 disables its DNS), so there is nothing to query: we check the

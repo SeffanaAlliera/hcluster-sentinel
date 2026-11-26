@@ -91,11 +91,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(generic.services, [])                       # new nodes start with NO assumed services
         self.assertGreaterEqual(len(generic.prometheus.queries), 10)
         h1 = load("config.h1.example.yaml")
-        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq-dhcp"})
+        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq-dhcp", "cockpit"})
         self.assertEqual(next(x for x in h1.services if x.key == "dnsmasq-dhcp").type, "process")
         names = {(q.name, q.label_by) for q in generic.prometheus.queries}
         self.assertIn(("disk_percent", "mountpoint"), names)
-        self.assertIn(("net_rx_bytes_per_sec", "device"), names)
+        self.assertIn(("net_rx_bytes_per_sec", None), names)
         self.assertIn(("cpu_temp_celsius", None), names)
 
 
@@ -257,7 +257,7 @@ class LocalMetricsTests(unittest.TestCase):
 
     def test_values_per_nic_and_total(self):
         t = [100.0]
-        lc = LocalCollector(["/"], ["lo"], clock=lambda: t[0], sys_root="/nonexistent")
+        lc = LocalCollector(["/"], ["lo"], clock=lambda: t[0], sys_root="/nonexistent", net_per_interface=True)
         lc.proc = self.fake_proc((100, 0, 900))
         first = lc.collect()
         self.assertNotIn(("cpu_percent", ""), first)                  # needs two samples; not invented
@@ -311,6 +311,52 @@ class LocalMetricsTests(unittest.TestCase):
     def test_missing_proc_does_not_raise(self):
         lc = LocalCollector(["/nonexistent-mount"], [], proc="/nonexistent-proc", sys_root="/nonexistent")
         self.assertEqual(lc.collect(), {})
+
+    def test_network_is_one_overall_metric_by_default(self):
+        t = [100.0]
+        lc = LocalCollector(["/"], ["lo"], clock=lambda: t[0], sys_root="/nonexistent")
+        lc.proc = self.fake_proc((100, 0, 900)); lc.collect()
+        lc.proc = self.fake_proc((200, 0, 1000), rx=3000, tx=1500); t[0] = 102.0
+        out = lc.collect()
+        self.assertEqual(out[("net_rx_bytes_per_sec", "")], 3000.0)
+        self.assertEqual([k for k in out if k[0].startswith("net_") and k[1]], [])      # no per-NIC rows
+
+    def test_acpitz_is_last_resort_only(self):
+        from hcluster_agent.localmetrics import list_sensors, read_cpu_temp
+        d = tempfile.mkdtemp(); z = f"{d}/class/thermal/thermal_zone0"; os.makedirs(z)
+        open(f"{z}/type", "w").write("acpitz\n"); open(f"{z}/temp", "w").write("42000\n")
+        self.assertEqual(read_cpu_temp(d), 42.0)
+        self.assertTrue(any("acpitz" in x for x in list_sensors(d)))
+
+
+class DriveMergeTests(unittest.TestCase):
+    """Prometheus (e.g. node_exporter in Docker) may only see / and /boot/efi: local detection must add the other drives."""
+    def run_agent(self, prom_values, **over):
+        import hcluster_agent.agent as A
+        from hcluster_agent.prometheus import PromResult
+        mounts = "/dev/sda2 / ext4 rw 0 0\n/dev/sda1 /boot/efi vfat rw 0 0\n/dev/sdb1 /mnt/media ext4 rw 0 0\n"
+        cfg = mkcfg(prometheus=C.PrometheusConfig(enabled=True), **over)
+        ag = Agent(cfg)
+        d = tempfile.mkdtemp(); open(f"{d}/mounts", "w").write(mounts)
+        ag.local.proc = d
+        orig_stat, orig_collect = os.statvfs, A.prom_collect
+        fake = os.statvfs_result((4096, 4096, 1000, 400, 300, 0, 0, 0, 0, 255))
+        os.statvfs = lambda p: fake
+        A.prom_collect = lambda _c: PromResult(prom_status="ok", values=prom_values, metrics_status="ok")
+        try:
+            return {(e["name"], e.get("label", "")): e["source"] for e in ag.collect_metrics()["values"]}
+        finally:
+            os.statvfs, A.prom_collect = orig_stat, orig_collect
+
+    def test_missing_drives_added_and_efi_dropped(self):
+        got = self.run_agent({("disk_percent", "/"): 40.0, ("disk_percent", "/boot/efi"): 2.0,
+                              ("net_rx_bytes_per_sec", ""): 5.0, ("net_rx_bytes_per_sec", "eth0"): 3.0})
+        self.assertEqual(got[("disk_percent", "/")], "prometheus")
+        self.assertEqual(got[("disk_percent", "/mnt/media")], "local")        # the drive Prometheus did not see
+        self.assertNotIn(("disk_percent", "/boot/efi"), got)
+        self.assertIn(("net_rx_bytes_per_sec", ""), got)
+        self.assertNotIn(("net_rx_bytes_per_sec", "eth0"), got)               # one overall network metric
+        self.assertIn(("net_rx_bytes_per_sec", "eth0"), self.run_agent({("net_rx_bytes_per_sec", "eth0"): 3.0}, net_per_interface=True))
 
 
 class ProcessCheckTests(unittest.TestCase):

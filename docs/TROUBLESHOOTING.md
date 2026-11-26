@@ -30,3 +30,9 @@ Send one report by hand and see the payload: `sudo hcluster-agent once --send`.
 | Agent restarts every ~3 min | systemd watchdog (180 s) — a check is hanging. Lower `timeout_seconds`/`retries`. |
 | `permission denied` writing state | `/var/lib/hcluster-agent` must be owned by `hcluster` (installer does this). |
 | Supabase project paused | Free-tier inactivity pause; restore from the Supabase dashboard. |
+
+## Only `/` (and `/boot/efi`) shows up as drives, or CPU temperature is missing
+Run `sudo hcluster-agent discover` on the node. It lists the drives the agent will monitor, **every temperature sensor the kernel exposes**, and the NICs.
+- Drives: the agent adds any real mounted drive that Prometheus does not report (e.g. node_exporter in Docker only sees its own mounts) and hides `/boot/*`. Unmounted drives can't be measured: mount them first (`lsblk -f`, `/etc/fstab`).
+- Temperature: if `discover` shows no sensor, load the driver (`sudo modprobe coretemp`, and add `coretemp` to `/etc/modules` to persist). If it shows a sensor under another chip name, tell me the name. If it shows one but the dashboard doesn't, the agent is still the old version: `sudo ./agent/update.sh`.
+- Network: one overall throughput metric (all NICs summed). Set `local_metrics.net_per_interface: true` to also see each NIC.

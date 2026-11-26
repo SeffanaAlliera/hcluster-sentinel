@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from . import __version__
 from .checks import run_check
 from .config import Config
-from .localmetrics import LocalCollector, host_info
+from .localmetrics import DEFAULT_DISK_EXCLUDE, LocalCollector, host_info
 from .prometheus import collect as prom_collect
 from .reporter import Reporter
 
@@ -50,7 +50,8 @@ class Agent:
         self.cfg = cfg
         self.reporter = reporter or Reporter(cfg)
         self.now = now
-        self.local = LocalCollector(cfg.disk_mountpoints or None, cfg.net_exclude_prefixes, disk_exclude=cfg.disk_exclude_prefixes)
+        self.local = LocalCollector(cfg.disk_mountpoints or None, cfg.net_exclude_prefixes, disk_exclude=cfg.disk_exclude_prefixes,
+                                   net_per_interface=cfg.net_per_interface)
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="check")
         t = self.now()
         self.next_hb = t
@@ -81,9 +82,22 @@ class Agent:
         values: list[dict] = []
         if cfg.prometheus.enabled:
             pr = prom_collect(cfg.prometheus)
+            excl = DEFAULT_DISK_EXCLUDE if cfg.disk_exclude_prefixes is None else cfg.disk_exclude_prefixes
+            pinned = set(cfg.disk_mountpoints)
+            skipped = lambda m: bool(pinned and m not in pinned) or (not pinned and any(  # noqa: E731
+                m == p or m.startswith(p.rstrip("/") + "/") for p in excl))
             for (name, label), v in pr.values.items():
+                if name.startswith("disk_") and label and skipped(label):
+                    continue                                   # e.g. /boot/efi: not a data drive
+                if name.startswith("net_") and label and not cfg.net_per_interface:
+                    continue                                   # one overall network metric only
                 values.append(_entry(name, label, v, "prometheus"))
             unavailable = list(pr.unavailable)
+            if cfg.local_fallback:                             # drives Prometheus can't see (e.g. node_exporter in Docker)
+                have = {(e["name"], e.get("label", "")) for e in values}
+                for (name, label), v in local.items():
+                    if name.startswith("disk_") and label and (name, label) not in have:
+                        values.append(_entry(name, label, v, "local"))
             if cfg.local_fallback:
                 for name in list(unavailable):
                     got = [(k, v) for k, v in local.items() if k[0] == name]

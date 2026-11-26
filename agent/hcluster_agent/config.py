@@ -94,6 +94,7 @@ class Config:
     prometheus: PrometheusConfig
     services: list[ServiceCheck]
     log_level: str = "INFO"
+    net_per_interface: bool = False        # False = ONE overall network metric (all NICs summed)
 
 
 def parse_status_ranges(value: Any) -> list[tuple[int, int]]:
@@ -259,6 +260,7 @@ def load_config(path: str, env: dict[str, str] | None = None) -> Config:
         max_queue=int(api.get("max_queue", 720)),
         state_dir=str(raw.get("state_dir", "/var/lib/hcluster-agent")),
         local_fallback=bool(loc.get("fallback", True)),
+        net_per_interface=bool(loc.get("net_per_interface", False)),
         net_exclude_prefixes=list(loc.get("net_exclude_prefixes", ["lo", "docker", "veth", "br-", "virbr", "tailscale"])),
         disk_mountpoints=[str(x) for x in (loc.get("disk_mountpoints") or [])],
         disk_exclude_prefixes=(list(loc["disk_exclude_prefixes"]) if loc.get("disk_exclude_prefixes") is not None else None),
