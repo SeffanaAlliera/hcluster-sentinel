@@ -36,3 +36,20 @@ Run `sudo hcluster-agent discover` on the node. It lists the drives the agent wi
 - Drives: the agent adds any real mounted drive that Prometheus does not report (e.g. node_exporter in Docker only sees its own mounts) and hides `/boot/*`. Unmounted drives can't be measured: mount them first (`lsblk -f`, `/etc/fstab`).
 - Temperature: if `discover` shows no sensor, load the driver (`sudo modprobe coretemp`, and add `coretemp` to `/etc/modules` to persist). If it shows a sensor under another chip name, tell me the name. If it shows one but the dashboard doesn't, the agent is still the old version: `sudo ./agent/update.sh`.
 - Network: one overall throughput metric (all NICs summed). Set `local_metrics.net_per_interface: true` to also see each NIC.
+
+## GPU charts
+- No GPU charts at all: the node has no supported GPU, or `local_metrics.gpu: false`. `sudo hcluster-agent discover` has a "GPU" section showing what was found and what could be read.
+- Intel GPU shows a clock but no utilisation, and "gpu_utilization_percent" is listed as unavailable: the agent may not read the i915 performance counters. Install the opt-in drop-in (see `agent/systemd/gpu-intel.conf`); if it is still denied, check `cat /proc/sys/kernel/perf_event_paranoid` (Ubuntu defaults to 4; CAP_PERFMON overrides it).
+- Intel GPU clock reads 0 MHz when idle: the GPU is in its power-saving state. It rises under load (for example during hardware transcoding).
+- No VRAM chart on Intel: integrated GPUs share system RAM and expose no VRAM counter. The chart appears for AMD/NVIDIA cards.
+- NVIDIA shows nothing: needs `nvidia-smi` on the PATH and `PrivateDevices=no` (see the drop-in file comments).
+
+## Service discovery found nothing / the wrong thing
+Run `sudo hcluster-agent discover-services --dry-run` and read every line, including `skipped:` and the unidentified list.
+* **Nothing detected, but the app is running:** the signature needs strong evidence (a running systemd unit, the owning process, or the HTTP answer). Docker containers have no host unit; their port must be *published* on the host and answer like the app. Check with `ss -ltnp` and `curl -s http://127.0.0.1:<port>/<path>`. If your install differs (another port or process name), add an entry to `/etc/hcluster-agent/signatures.yaml`.
+* **"unit is running but no listening port was found":** the service listens on a port that is not one of its known ports and its process is not recognised; add it by hand or with a signature.
+* **"loopback-only ... not added":** the endpoint is only on 127.0.0.1 and is not a known web UI. Add a manual check if you want it.
+* **"cannot write ... (run with sudo)"** → run with `sudo`. **"nothing was changed" with exit 2** → `config.yaml` is already invalid: `sudo hcluster-agent check-config` shows the line.
+* **"rolled back to the previous config.yaml"** → the agent did not restart with the new checks; the old file is back and running. See `journalctl -u hcluster-agent`; the attempted file is not kept, the backup `config.yaml.bak-*` is the old one.
+* **A discovered check shows "down":** the check uses the address the port is bound to; verify with the same `curl`. For https add/keep `verify_tls: false`.
+* Installer printed "automatic discovery failed": the install itself succeeded; run `sudo hcluster-agent discover-services` afterwards to see the error.

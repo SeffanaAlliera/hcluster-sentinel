@@ -51,7 +51,7 @@ class Agent:
         self.reporter = reporter or Reporter(cfg)
         self.now = now
         self.local = LocalCollector(cfg.disk_mountpoints or None, cfg.net_exclude_prefixes, disk_exclude=cfg.disk_exclude_prefixes,
-                                   net_per_interface=cfg.net_per_interface)
+                                   net_per_interface=cfg.net_per_interface, gpu=cfg.gpu_metrics)
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="check")
         t = self.now()
         self.next_hb = t
@@ -108,6 +108,9 @@ class Agent:
                         unavailable.remove(name)
             if "cpu_temp_celsius" not in {e["name"] for e in values} and "cpu_temp_celsius" not in unavailable:
                 unavailable.append("cpu_temp_celsius")        # nothing could read it: say so instead of staying silent
+            for name in (self.local.gpu.unavailable if self.local.gpu else []):
+                if name not in {e["name"] for e in values} and name not in unavailable:
+                    unavailable.append(name)                   # a GPU exists but its utilisation can't be read
             for name, err in pr.errors.items():
                 log.debug("query %s failed: %s", name, err)
             return {"status": pr.metrics_status,
@@ -121,6 +124,7 @@ class Agent:
             core = {"mem_percent", "disk_percent"}
             status = "ok" if core & {k[0] for k in local} else "failed"
             miss = ["cpu_temp_celsius"] if ("cpu_temp_celsius", "") not in local else []
+            miss += [n for n in (self.local.gpu.unavailable if self.local.gpu else []) if n not in {k[0] for k in local}]
             return {"status": status, "prometheus": {"status": "disabled"}, "values": values, "unavailable": miss}
         return {"status": "disabled", "prometheus": {"status": "disabled"}, "values": [], "unavailable": []}
 

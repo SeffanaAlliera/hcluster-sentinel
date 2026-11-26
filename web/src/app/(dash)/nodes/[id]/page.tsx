@@ -10,6 +10,7 @@ import { drives, nics, pick, seriesKey, worstDrive, type LatestRow } from '@/lib
 import { StatusBadge } from '@/components/StatusBadge';
 import { ServiceTable } from '@/components/ServiceTable';
 import { IncidentList } from '@/components/IncidentList';
+import { cloneElement, type ReactElement } from 'react';
 import { MetricChart } from '@/components/MetricChart';
 import { RangeTabs } from '@/components/RangeTabs';
 import { NodeActions } from '@/components/NodeActions';
@@ -58,12 +59,34 @@ export default async function NodePage({ params, searchParams }: { params: Promi
   const cpuName = node.cpu_model ? `${node.cpu_model}${node.cpu_cores ? ` · ${node.cpu_cores} threads` : ''}` : undefined;
   const ramTotal = pick(latest, 'mem_total_bytes');
   const ramName = ramTotal != null ? `Total RAM ${bytes(ramTotal)}` : undefined;
+  // GPUs (auto-detected by the agent; nothing is shown for a node without one)
+  const gpuLabels = [...new Set(Object.keys(ms.series).filter((k) => /^gpu_(utilization_percent|clock_mhz|vram_percent)\|/.test(k)).map((k) => k.slice(k.indexOf('|') + 1)))].sort();
+  const gpuSeries = (name: string) => build(gpuLabels.filter((l) => ms.series[`${name}|${l}`]).map((l, i) => ({ name, label: l, legend: l, color: COLORS[i % COLORS.length] })));
+  const gpuUtilC = gpuSeries('gpu_utilization_percent'), gpuClockC = gpuSeries('gpu_clock_mhz'), gpuVramC = gpuSeries('gpu_vram_percent');
+  const vramTotals = latest.filter((r) => r.name === 'gpu_vram_total_bytes').map((r) => `${r.label || 'GPU'} ${bytes(r.value)}`).join(' · ');
+  const gpuIntegrated = gpuLabels.some((l) => /\(i915\)|\(xe\)/.test(l));
+
   const netC = build([{ name: 'net_rx_bytes_per_sec', label: '', legend: 'Receive (all NICs)', color: '#34d399' }, { name: 'net_tx_bytes_per_sec', label: '', legend: 'Transmit (all NICs)', color: '#f472b6' }]);
   const nicNames = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('net_rx_bytes_per_sec|')).map((k) => k.slice('net_rx_bytes_per_sec|'.length)))].sort();
   const nicCharts = nicNames.map((n) => ({ n, c: build([{ name: 'net_rx_bytes_per_sec', label: n, legend: 'Receive', color: '#34d399' }, { name: 'net_tx_bytes_per_sec', label: n, legend: 'Transmit', color: '#f472b6' }]) }));
-  const span = RANGES[range].seconds * 1000;
   const sources = new Set(latest.map((l) => l.source));
 
+  const tzp = node.timezone;
+  const span = RANGES[range].seconds * 1000;
+  const charts: ReactElement<{ wide?: boolean }>[] = [
+    <MetricChart key="cpu" title="CPU utilisation" subtitle={cpuName} unit="percent" spanMs={span} tz={tzp} {...cpuC} />,
+    <MetricChart key="temp" title="CPU temperature" subtitle={cpuName} unit="celsius" spanMs={span} tz={tzp} {...tempC} />,
+    <MetricChart key="mem" title="Memory utilisation" subtitle={ramName} unit="percent" spanMs={span} tz={tzp} {...memC} />,
+    <MetricChart key="disk" title={`Disk utilisation${driveMounts.length > 1 ? ` (${driveMounts.length} drives)` : ''}`} unit="percent" spanMs={span} tz={tzp} {...diskC} />,
+    <MetricChart key="rd" title="Disk read throughput (per drive)" unit="bytes" spanMs={span} tz={tzp} {...readC} />,
+    <MetricChart key="wr" title="Disk write throughput (per drive)" unit="bytes" spanMs={span} tz={tzp} {...writeC} />,
+    <MetricChart key="net" title="Network throughput — all NICs combined" unit="bytes" spanMs={span} tz={tzp} {...netC} />,
+    ...(nicCharts.length > 1 ? nicCharts.map(({ n, c }) => <MetricChart key={`nic-${n}`} title={`Network — ${n}`} unit="bytes" spanMs={span} tz={tzp} {...c} />) : []),
+    ...(gpuUtilC.series.length ? [<MetricChart key="gpu-util" title="GPU utilisation" subtitle={gpuIntegrated ? 'Integrated GPU: busiest engine (render / video / blitter)' : undefined} unit="percent" spanMs={span} tz={tzp} {...gpuUtilC} />] : []),
+    ...(gpuClockC.series.length ? [<MetricChart key="gpu-clock" title="GPU clock speed" unit="mhz" spanMs={span} tz={tzp} {...gpuClockC} />] : []),
+    ...(gpuVramC.series.length ? [<MetricChart key="gpu-vram" title="GPU VRAM used" subtitle={vramTotals || undefined} unit="percent" spanMs={span} tz={tzp} {...gpuVramC} />] : []),
+  ];
+  if (charts.length % 2 === 1) charts[charts.length - 1] = cloneElement(charts[charts.length - 1], { wide: true });   // keep the two-column grid balanced
   return (
     <div className="space-y-6">
       <div>
@@ -104,16 +127,7 @@ export default async function NodePage({ params, searchParams }: { params: Promi
 
       <section>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Metrics</h2><RangeTabs base={`/nodes/${id}`} current={range} /></div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <MetricChart title="CPU utilisation" subtitle={cpuName} unit="percent" spanMs={span} tz={node.timezone} {...cpuC} />
-          <MetricChart title="CPU temperature" subtitle={cpuName} unit="celsius" spanMs={span} tz={node.timezone} {...tempC} />
-          <MetricChart title="Memory utilisation" subtitle={ramName} unit="percent" spanMs={span} tz={node.timezone} {...memC} />
-          <MetricChart title={`Disk utilisation${driveMounts.length > 1 ? ` (${driveMounts.length} drives)` : ''}`} unit="percent" spanMs={span} tz={node.timezone} {...diskC} />
-          <MetricChart title="Disk read throughput (per drive)" unit="bytes" spanMs={span} tz={node.timezone} {...readC} />
-          <MetricChart title="Disk write throughput (per drive)" unit="bytes" spanMs={span} tz={node.timezone} {...writeC} />
-          <MetricChart title="Network throughput — all NICs combined" unit="bytes" spanMs={span} tz={node.timezone} {...netC} />
-          {nicCharts.length > 1 && nicCharts.map(({ n, c }) => <MetricChart key={n} title={`Network — ${n}`} unit="bytes" spanMs={span} tz={node.timezone} {...c} />)}
-        </div>
+        <div className="grid gap-4 lg:grid-cols-2">{charts}</div>
         {driveList.length > 0 && (
           <div className="card mt-4 p-4">
             <h3 className="mb-3 text-sm font-medium text-slate-200">Drives ({driveList.length})</h3>

@@ -33,3 +33,6 @@ The browser never talks to Supabase at all: login is a server action and every r
 * The in-memory limiter is per serverless instance (best effort); the DB limiter is authoritative. Add Vercel Firewall rules for DDoS-class traffic.
 * Consider enabling **MFA** and CAPTCHA in Supabase Auth, and a custom domain behind Vercel's protection features.
 * Supabase free projects pause after ~1 week of inactivity; the agents' traffic keeps yours active.
+
+## Optional: Intel GPU utilisation (`gpu-intel.conf`)
+The default systemd unit grants no capabilities. Reading Intel GPU *utilisation* needs the kernel's performance counters, so it is an **opt-in drop-in** (`agent/systemd/gpu-intel.conf`) that adds only `CAP_PERFMON` and the `perf_event_open` syscall. Performance counters can in principle be used for side-channel profiling by a process that can run code as the agent user; the agent runs only its own code as an unprivileged user with no inbound network. Leave the drop-in out if you do not need the utilisation chart (the GPU clock speed does not need it). NVIDIA support needs `PrivateDevices=no` for the same reason (device nodes are hidden by default); AMD needs nothing extra.

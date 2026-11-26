@@ -22,11 +22,22 @@ def main(argv=None) -> int:
     o.add_argument("--send", action="store_true")
     d = sub.add_parser("discover", help="probe Prometheus, listening ports and well-known services")
     d.add_argument("--prometheus-url", action="append", help="repeatable; default tries :9091 then :9090 on localhost")
+    ds = sub.add_parser("discover-services", help="find common services on this machine and add health checks to config.yaml (never edits or deletes existing ones)")
+    ds.add_argument("--dry-run", action="store_true", help="show what would be added; change nothing")
+    ds.add_argument("--no-restart", action="store_true", help="do not restart the agent after changing config.yaml")
+    ds.add_argument("--include-unidentified", action="store_true", help="also add generic TCP checks (key tcp-<port>) for listening ports no signature identifies")
+    ds.add_argument("--signatures", action="append", help="extra signatures YAML file (repeatable); <config dir>/signatures.yaml is read automatically")
+    ds.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     cmd = args.cmd or "run"
 
     if cmd == "discover":
         return discover(args.prometheus_url or ["http://127.0.0.1:9091", "http://127.0.0.1:9090"])
+
+    if cmd == "discover-services":
+        from .svcdiscover import run as run_discovery
+        return run_discovery(args.config, dry_run=args.dry_run, no_restart=args.no_restart, include_unidentified=args.include_unidentified,
+                             signatures=args.signatures, as_json=args.json)
 
     try:
         cfg = load_config(args.config)

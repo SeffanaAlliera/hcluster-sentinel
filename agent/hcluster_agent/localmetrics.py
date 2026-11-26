@@ -189,13 +189,15 @@ def list_sensors(sys_root: str = "/sys") -> list[str]:
 class LocalCollector:
     def __init__(self, mountpoints: list[str] | None = None, exclude: list[str] | None = None, proc: str = "/proc",
                  clock: Callable[[], float] = time.monotonic, disk_exclude: list[str] | None = None, sys_root: str = "/sys",
-                 net_per_interface: bool = False):
+                 net_per_interface: bool = False, gpu: bool = True):
         self.mountpoints = mountpoints            # None/[] = auto-detect every real drive
         self.exclude = exclude or []
         self.disk_exclude = disk_exclude
         self.proc = proc
         self.sys_root = sys_root
         self.net_per_interface = net_per_interface
+        from .gpu import GpuCollector
+        self.gpu = GpuCollector(sys_root) if gpu else None
         self.clock = clock
         self._cpu: tuple[int, int] | None = None
         self._net: tuple[dict[str, tuple[int, int]], float] | None = None
@@ -211,6 +213,11 @@ class LocalCollector:
             self._cpu = (idle, total)
         except (OSError, ValueError, IndexError):
             pass
+        if self.gpu is not None:
+            try:
+                out.update(self.gpu.collect())
+            except Exception:  # noqa: BLE001  a GPU reader must never break the other metrics
+                pass
         temp = read_cpu_temp(self.sys_root)
         if temp is not None:
             out[("cpu_temp_celsius", "")] = temp

@@ -64,6 +64,8 @@ local_metrics:
   # to also report each NIC separately.
   # net_per_interface: false
   net_exclude_prefixes: [lo, docker, veth, br-, virbr, tailscale]
+  # GPU: utilisation, clock speed and VRAM are auto-detected (NVIDIA / AMD / Intel) and skipped if there is no GPU.
+  # gpu: true
 
 # ---------------------------------------------------------------------------
 # Service checks: list ONLY what runs on THIS node. Every node has its own list;

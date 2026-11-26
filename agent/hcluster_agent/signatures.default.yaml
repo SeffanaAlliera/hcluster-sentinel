@@ -1,0 +1,133 @@
+# Service signatures used by `hcluster-agent discover-services` and the installer.
+# Override or extend WITHOUT editing this file: put entries with the same `id` (override) or a new `id` (extra) in
+#   <config dir>/signatures.yaml        (picked up automatically)   or pass  --signatures FILE
+#
+# A service is NAMED as an application only on STRONG evidence:
+#   - a running systemd unit whose name matches `units` (or whose description matches `description`), or
+#   - a listening port owned by a process listed in `processes`, or
+#   - an HTTP answer on a listening port that matches `http.body_contains` / `http.header_contains`.
+# A listening port that merely equals one of `ports` is WEAK evidence: it is reported as "unidentified" and never
+# given an application name (several apps share ports, e.g. 9090 = Prometheus AND Cockpit).
+#
+# Fields:
+#   id, name        stable key base / display name
+#   units           regexes matched against the systemd unit name without ".service"
+#   description     regex matched against the unit's Description
+#   processes       process names (/proc/<pid>/comm) that own the listening port
+#   ports           default / well-known TCP ports (primary first)
+#   http:           {path, scheme, expected_status, body_contains, header_contains, probe}  (probe: false = never probe over HTTP)
+#   check:          what to monitor: type http|tcp|process, path, scheme, expected_status, verify_tls, process_name, listen_tcp
+#   loopback_ok     true = also monitor when it listens only on 127.0.0.1 (web UIs behind a reverse proxy)
+signatures:
+  - id: jellyfin
+    name: Jellyfin
+    units: ["^jellyfin"]
+    processes: [jellyfin, jellyfin.dll]
+    ports: [8096]
+    http: {path: /health, body_contains: "Healthy"}
+    check: {type: http, path: /health, expected_status: "200"}
+    loopback_ok: true
+
+  - id: immich
+    name: Immich
+    units: ["^immich"]
+    processes: [immich, immich-server]
+    ports: [2283]
+    http: {path: /api/server/ping, body_contains: "pong"}
+    check: {type: http, path: /api/server/ping, expected_status: "200"}
+    loopback_ok: true
+
+  - id: pihole
+    name: Pi-hole
+    units: ["^pihole-FTL", "^pihole"]
+    processes: [pihole-FTL]
+    ports: [80, 8080]
+    http: {path: /admin/, body_contains: "Pi-hole"}
+    check: {type: http, path: /admin/, expected_status: "200-399"}
+    loopback_ok: true
+
+  - id: syncthing
+    name: Syncthing
+    units: ["^syncthing"]
+    processes: [syncthing]
+    ports: [8384]
+    http: {path: /, body_contains: "Syncthing"}
+    check: {type: http, path: /rest/noauth/health, expected_status: "200"}
+    loopback_ok: true
+
+  - id: samba
+    name: Samba
+    units: ["^smbd", "^smb$", "^samba"]
+    processes: [smbd]
+    ports: [445]
+    http: {probe: false}
+    check: {type: tcp}
+
+  - id: ssh
+    name: SSH
+    units: ["^ssh$", "^sshd$", "^ssh@"]
+    processes: [sshd]
+    ports: [22]
+    http: {probe: false}
+    check: {type: tcp}
+
+  - id: grafana
+    name: Grafana
+    units: ["^grafana"]
+    processes: [grafana, grafana-server]
+    ports: [3000]
+    http: {path: /api/health, body_contains: "database"}
+    check: {type: http, path: /api/health, expected_status: "200"}
+    loopback_ok: true
+
+  - id: prometheus
+    name: Prometheus
+    units: ["^prometheus$"]
+    processes: [prometheus]
+    ports: [9090, 9091]
+    http: {path: /-/healthy, body_contains: "Prometheus"}
+    check: {type: http, path: /-/healthy, expected_status: "200"}
+    loopback_ok: true
+
+  - id: cockpit
+    name: Cockpit
+    units: ["^cockpit"]
+    processes: [cockpit-ws]
+    ports: [9090]
+    http: {path: /ping, scheme: https, body_contains: "cockpit"}
+    check: {type: http, path: /, scheme: https, verify_tls: false, expected_status: "200-399"}
+
+  - id: docker
+    name: Docker Engine
+    units: ["^docker$"]
+    processes: [dockerd]
+    ports: []
+    http: {probe: false}
+    check: {type: process, process_name: dockerd}
+
+  - id: minecraft
+    multi: true
+    name: Minecraft server
+    units: ["minecraft", "^mc-"]
+    description: "(?i)minecraft"
+    processes: []
+    ports: [25565]
+    http: {probe: false}
+    check: {type: tcp}
+
+  - id: portainer
+    name: Portainer
+    units: ["^portainer"]
+    processes: [portainer]
+    ports: [9000, 9443]
+    http: {path: /api/system/status, body_contains: "Version"}
+    check: {type: http, path: /api/system/status, expected_status: "200"}
+    loopback_ok: true
+
+  - id: dnsmasq
+    name: dnsmasq
+    units: ["^dnsmasq"]
+    processes: [dnsmasq]
+    ports: []
+    http: {probe: false}
+    check: {type: process, process_name: dnsmasq}

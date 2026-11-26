@@ -135,4 +135,32 @@ describe('real Python agent -> route -> Postgres, incl. failure simulation', () 
     expect((await node()).status).toBe('degraded');
     expect((await ctx.db.query(`select 1 from public.incidents where kind='node_offline' and resolved_at is not null`)).rows).toHaveLength(1);
   });
+
+  it('service discovery: real agent discovers, reports, and repeated discovery/reports never duplicate services', async () => {
+    const agentDir = path.resolve(__dirname, '../../../../../../agent');
+    const app = http.createServer((req, res) => { res.writeHead(req.url === '/health' ? 200 : 404); res.end('Healthy'); }).listen(0, '127.0.0.1');
+    await new Promise((r) => app.on('listening', r));
+    const appPort = (app.address() as { port: number }).port;
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'hcs-disc-e2e-'));
+    const cfg = path.join(dir, 'config.yaml'), fx = path.join(dir, 'fx.json');
+    writeFileSync(cfg, `node:\n  id: "${nodeId}"\napi:\n  url: "${base}"\nstate_dir: "${dir}"\nprometheus:\n  enabled: false\nlocal_metrics:\n  fallback: false\nservices: []\n`);
+    writeFileSync(fx, JSON.stringify({ systemd: [{ unit: 'jellyfin.service', description: 'Jellyfin' }], listeners: [{ port: appPort, process: 'jellyfin' }],
+      http: { [String(appPort)]: { '/health': { status: 200, body: 'Healthy' } } } }));
+    // jellyfin's signature port is 8096: point the fixture's listener at our test server via a custom signature file
+    writeFileSync(path.join(dir, 'signatures.yaml'), `signatures:\n  - id: jellyfin\n    name: Jellyfin\n    units: ['^jellyfin']\n    processes: [jellyfin]\n    ports: [${appPort}]\n    http: {path: /health, body_contains: Healthy}\n    check: {type: http, path: /health, expected_status: '200'}\n    loopback_ok: true\n`);
+    const py = (args: string[]) => new Promise<{ status: number; stdout: string; stderr: string }>((resolve) => {
+      execFile('python3', ['-m', 'hcluster_agent', '-c', cfg, ...args], { cwd: agentDir, env: { ...process.env, PYTHONPATH: agentDir, HCLUSTER_TOKEN: token, HCLUSTER_DISCOVERY_FIXTURE: fx, HCLUSTER_SKIP_SYSTEMD: '1' } },
+        (err, stdout, stderr) => resolve({ status: err ? ((err as { code?: number }).code ?? 1) : 0, stdout, stderr }));
+    });
+    const rows = async () => (await ctx.db.query(`select key, status from public.services where key='jellyfin'`)).rows as { key: string; status: string }[];
+    expect((await py(['discover-services'])).status).toBe(0);
+    expect((await py(['once', '--send'])).status).toBe(0);
+    expect(await rows()).toEqual([{ key: 'jellyfin', status: 'operational' }]);   // (this test is the first to report this key)         // appears under the node, health-checked for real
+    const again = await py(['discover-services']);
+    expect(again.stdout).toContain('config unchanged');
+    expect((await py(['once', '--send'])).status).toBe(0);
+    expect((await py(['once', '--send'])).status).toBe(0);
+    expect(await rows()).toHaveLength(1);                                                // repeated discovery + reports: still ONE row
+    app.close();
+  });
 });

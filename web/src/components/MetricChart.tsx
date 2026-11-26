@@ -7,13 +7,13 @@ type Point = Record<string, number | null> & { t: number };
 
 const fmtBytes = (n: number) => { const u = ['B/s', 'KB/s', 'MB/s', 'GB/s']; let i = 0, v = n; while (v >= 1024 && i < 3) { v /= 1024; i++; } return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`; };
 
-export function MetricChart({ title, subtitle, data, series, unit, spanMs, tz }: { title: string; subtitle?: string; data: Point[]; series: ChartSeries[]; unit: 'percent' | 'bytes' | 'celsius'; spanMs: number; tz?: string | null }) {
+export function MetricChart({ title, subtitle, data, series, unit, spanMs, tz, wide }: { title: string; subtitle?: string; data: Point[]; series: ChartSeries[]; unit: 'percent' | 'bytes' | 'celsius' | 'mhz'; spanMs: number; tz?: string | null; wide?: boolean }) {
   const tick = (t: number) => { const z = zoneParts(t, tz); return spanMs > 86_400_000 * 1.5 ? `${Number(z.M)}/${Number(z.D)} ${z.h}h` : `${z.h}:${z.m}`; };   // node-local time
   const zoneName = zoneParts(Date.now(), tz).zone;
-  const fmt = (v: number) => (unit === 'percent' ? `${v.toFixed(1)}%` : unit === 'celsius' ? `${v.toFixed(1)}°C` : fmtBytes(v));
-  const axis = (v: number) => (unit === 'percent' ? `${v}%` : unit === 'celsius' ? `${v}°` : fmtBytes(v));
+  const fmt = (v: number) => (unit === 'percent' ? `${v.toFixed(1)}%` : unit === 'celsius' ? `${v.toFixed(1)}°C` : unit === 'mhz' ? `${v.toFixed(0)} MHz` : fmtBytes(v));
+  const axis = (v: number) => (unit === 'percent' ? `${v}%` : unit === 'celsius' ? `${v}°` : unit === 'mhz' ? `${v}` : fmtBytes(v));
   return (
-    <div className="card p-4">
+    <div className={`card p-4${wide ? ' lg:col-span-2' : ''}`}>
       <div className="mb-2 flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="text-sm font-medium text-slate-200">{title}</h3>{subtitle && <p className="truncate text-xs text-slate-400" title={subtitle}>{subtitle}</p>}</div><span className="shrink-0 text-[11px] text-slate-500" title={tz ? `Node timezone: ${tz}` : 'Node timezone unknown, showing UTC'}>{zoneName}</span></div>
       {data.length === 0 ? (
         <div className="flex h-48 items-center justify-center text-sm text-slate-500">No data for this range</div>

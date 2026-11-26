@@ -158,6 +158,10 @@ def discover(prom_urls: list[str], proc: str = "/proc") -> int:
     print(f"\n-- CPU temperature sensor: {'%.1f °C' % t if t is not None else 'none found in /sys (coretemp/k10temp/thermal_zone)'}")
     for s in list_sensors() or ["(the kernel exposes no temperature sensors; try `sudo modprobe coretemp`)"]:
         print(f"    {s}")
+    from .gpu import diagnose
+    print("\n-- GPU (utilisation / clock / VRAM) --")
+    for ln in diagnose():
+        print(f"    {ln}")
     print("\n-- Network interfaces (all non-virtual-prefix NICs are summed into ONE overall throughput metric) --")
     try:
         for ifc in sorted(read_net_bytes(proc, [])):

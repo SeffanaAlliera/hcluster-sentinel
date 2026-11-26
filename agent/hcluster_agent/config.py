@@ -94,6 +94,7 @@ class Config:
     prometheus: PrometheusConfig
     services: list[ServiceCheck]
     log_level: str = "INFO"
+    gpu_metrics: bool = True               # auto-detect GPUs (nothing is reported if there is none)
     net_per_interface: bool = False        # False = ONE overall network metric (all NICs summed)
 
 
@@ -270,6 +271,7 @@ def load_config(path: str, env: dict[str, str] | None = None) -> Config:
         state_dir=str(raw.get("state_dir", "/var/lib/hcluster-agent")),
         local_fallback=bool(loc.get("fallback", True)),
         net_per_interface=bool(loc.get("net_per_interface", False)),
+        gpu_metrics=bool(loc.get("gpu", True)),
         net_exclude_prefixes=list(loc.get("net_exclude_prefixes", ["lo", "docker", "veth", "br-", "virbr", "tailscale"])),
         disk_mountpoints=[str(x) for x in (loc.get("disk_mountpoints") or [])],
         disk_exclude_prefixes=(list(loc["disk_exclude_prefixes"]) if loc.get("disk_exclude_prefixes") is not None else None),

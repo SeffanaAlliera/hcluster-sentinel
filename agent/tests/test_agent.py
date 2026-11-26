@@ -414,6 +414,99 @@ class DriveMergeTests(unittest.TestCase):
         self.assertIn(("net_rx_bytes_per_sec", "eth0"), self.run_agent({("net_rx_bytes_per_sec", "eth0"): 3.0}, net_per_interface=True))
 
 
+class GpuTests(unittest.TestCase):
+    def sysfs(self, driver, files):
+        d = tempfile.mkdtemp()
+        dev = f"{d}/devices/pci0000:00/0000:00:02.0"
+        os.makedirs(f"{dev}/drm/card1")
+        os.makedirs(f"{d}/bus/pci/drivers/{driver}")
+        os.symlink(f"{d}/bus/pci/drivers/{driver}", f"{dev}/driver")
+        os.makedirs(f"{d}/class/drm"); os.symlink(f"{dev}/drm/card1", f"{d}/class/drm/card1")
+        os.symlink(dev, f"{dev}/drm/card1/device")
+        os.makedirs(f"{d}/class/drm/card1-HDMI-A-1")                       # connector: must be ignored
+        for rel, text in files.items():
+            p = f"{d}/{rel}"; os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").write(text)
+        return d
+
+    def test_no_gpu_reports_nothing(self):
+        from hcluster_agent.gpu import GpuCollector
+        g = GpuCollector(tempfile.mkdtemp())
+        self.assertEqual(g.collect(), {}); self.assertEqual(g.unavailable, [])
+
+    def test_amd_sysfs(self):
+        from hcluster_agent.gpu import GpuCollector
+        d = self.sysfs("amdgpu", {})
+        dev = f"{d}/class/drm/card1/device"
+        open(f"{dev}/gpu_busy_percent", "w").write("37\n"); open(f"{dev}/mem_info_vram_used", "w").write("1073741824\n")
+        open(f"{dev}/mem_info_vram_total", "w").write("8589934592\n"); open(f"{dev}/pp_dpm_sclk", "w").write("0: 300Mhz\n1: 1500Mhz *\n2: 2100Mhz\n")
+        out = GpuCollector(d).collect()
+        lab = "card1 (amdgpu)"
+        self.assertEqual(out[("gpu_utilization_percent", lab)], 37.0)
+        self.assertEqual(out[("gpu_vram_percent", lab)], 12.5)
+        self.assertEqual(out[("gpu_vram_total_bytes", lab)], 8589934592.0)
+        self.assertEqual(out[("gpu_clock_mhz", lab)], 1500.0)
+
+    def test_nvidia_smi_parsing_and_na(self):
+        from hcluster_agent.gpu import GpuCollector
+        csv_text = "0, NVIDIA GeForce GTX 1650, 41, 1024, 4096, 1485\n1, NVIDIA T4, [N/A], [N/A], [N/A], 585\n"
+        out = GpuCollector(tempfile.mkdtemp(), run=lambda a: csv_text)
+        import shutil as sh; orig = sh.which; sh.which = lambda n: "/usr/bin/nvidia-smi"
+        try:
+            got = out.collect()
+        finally:
+            sh.which = orig
+        self.assertEqual(got[("gpu_utilization_percent", "GPU0 NVIDIA GeForce GTX 1650")], 41.0)
+        self.assertEqual(got[("gpu_vram_used_bytes", "GPU0 NVIDIA GeForce GTX 1650")], 1024 * 1048576.0)
+        self.assertEqual(got[("gpu_clock_mhz", "GPU1 NVIDIA T4")], 585.0)
+        self.assertNotIn(("gpu_utilization_percent", "GPU1 NVIDIA T4"), got)         # "[N/A]" is not invented
+
+    def intel_tree(self):
+        return self.sysfs("i915", {"class/drm/card1/gt_act_freq_mhz": "650\n", "bus/event_source/devices/i915/type": "23\n",
+                                   "bus/event_source/devices/i915/events/rcs0-busy": "config=0x0000000000000000\n",
+                                   "bus/event_source/devices/i915/events/vcs0-busy": "config=0x0000000000000102\n",
+                                   "bus/event_source/devices/i915/events/rcs0-busy.unit": "ns\n"})
+
+    def test_intel_clock_and_pmu_utilisation(self):
+        from hcluster_agent.gpu import GpuCollector
+        t = [10.0]; counters = {1: 0, 2: 0}; opened = []
+        def opener(ptype, cfg):
+            opened.append((ptype, cfg)); return len(opened)
+        g = GpuCollector(self.intel_tree(), clock=lambda: t[0], opener=opener, reader=lambda fd: counters[fd])
+        first = g.collect()
+        self.assertEqual(first[("gpu_clock_mhz", "card1 (i915)")], 650.0)            # clock needs no privilege
+        self.assertNotIn(("gpu_utilization_percent", "card1 (i915)"), first)        # needs two samples ...
+        self.assertEqual(g.unavailable, [])                                         # ... and that is not an error
+        self.assertEqual(sorted(opened), [(23, 0), (23, 0x102)])                    # one fd per engine; .unit file ignored
+        t[0] = 12.0; counters[1] = int(0.5e9); counters[2] = int(1.6e9)             # render 25% busy, video 80% busy over 2 s
+        self.assertEqual(g.collect()[("gpu_utilization_percent", "card1 (i915)")], 80.0)   # busiest engine wins (transcoding)
+
+    def test_intel_without_perfmon_is_unavailable_with_reason(self):
+        from hcluster_agent.gpu import GpuCollector
+        def deny(ptype, cfg): raise PermissionError(13, "Permission denied")
+        g = GpuCollector(self.intel_tree(), opener=deny)
+        out = g.collect()
+        self.assertIn(("gpu_clock_mhz", "card1 (i915)"), out)                       # clock still reported
+        self.assertEqual(g.unavailable, ["gpu_utilization_percent"])
+        self.assertTrue(any("CAP_PERFMON" in n for n in g.notes))
+
+    def test_agent_lists_unreadable_gpu_utilisation(self):
+        import hcluster_agent.agent as A
+        from hcluster_agent.gpu import GpuCollector
+        def deny(ptype, cfg): raise PermissionError(13, "Permission denied")
+        ag = Agent(mkcfg(prometheus=C.PrometheusConfig(enabled=False)))
+        ag.local.sys_root = "/nonexistent"; ag.local.gpu = GpuCollector(self.intel_tree(), opener=deny)
+        mr = ag.collect_metrics()
+        self.assertIn("gpu_utilization_percent", mr["unavailable"])
+        self.assertIn(("gpu_clock_mhz", "card1 (i915)"), {(v["name"], v.get("label", "")) for v in mr["values"]})
+
+    def test_perf_attr_layout(self):
+        from hcluster_agent.gpu import _PerfAttr, perf_open
+        import ctypes
+        self.assertEqual(ctypes.sizeof(_PerfAttr), 120)
+        with self.assertRaises(OSError):
+            perf_open(0xFFFF, 0)                                                     # bogus PMU: a clean error, never a crash
+
+
 class ProcessCheckTests(unittest.TestCase):
     def fake(self, comms=("systemd", "dnsmasq"), udp=(67,), tcp=()):
         d = tempfile.mkdtemp(); os.makedirs(f"{d}/net")

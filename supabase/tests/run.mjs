@@ -168,6 +168,24 @@ ok((await one("select public.rate_limit_blocked('k',3,60) as b")).b === true, 'r
 await q("update public.rate_limits set window_start = now() - interval '2 minutes' where key='k'");
 ok((await one("select public.rate_limit_hit('k',3,60) as a")).a === true, 'window resets');
 
+console.log('\nservice discovery sync (same keys reported repeatedly)');
+const countSvc = async () => (await q('select key from public.services where node_id=$1 order by key', [N])).map(x => x.key);
+const svcBefore = await countSvc();
+const disco = [svc('jellyfin', 'operational'), svc('samba', 'operational', { type: 'tcp' }), svc('ssh', 'operational', { type: 'tcp' }), svc('docker', 'operational', { type: 'process' })];
+await ingest(N, C, [report({ services: disco })]);
+const afterFirst = await countSvc();
+ok(JSON.stringify(afterFirst) === JSON.stringify([...new Set([...svcBefore, 'ssh', 'docker'])].sort()), 'newly discovered services appear under the node');
+for (let i = 0; i < 3; i++) await ingest(N, C, [report({ services: disco })]);
+ok(JSON.stringify(await countSvc()) === JSON.stringify(afterFirst), 'reporting the same discovered services again creates NO duplicates');
+await ingest(N, C, [report({ services: [svc('jellyfin', 'operational')] })]);
+ok(JSON.stringify(await countSvc()) === JSON.stringify(afterFirst), 'a service missing from a later report is NOT deleted');
+await ingest(N, C, [report({ services: [svc('jellyfin', 'operational', { name: 'Media (custom)', target: 'http://127.0.0.1:9999/custom' })] })]);
+const jf = await one("select name, target from public.services where node_id=$1 and key='jellyfin'", [N]);
+ok(jf.name === 'Media (custom)' && jf.target.endsWith(':9999/custom'), 'a renamed/retargeted check updates the SAME row');
+ok((await q("select 1 from public.services where node_id=$1 and key='jellyfin'", [N])).length === 1, 'still exactly one jellyfin row');
+await throws(() => q("insert into public.services(node_id,key,name,check_type) values ($1,'ssh','dup','tcp')", [N]), /duplicate key|unique/i, 'database enforces uniqueness of (node_id, key)');
+await q("delete from public.services where node_id=$1 and key in ('ssh','docker')", [N]);
+
 console.log('\nretention');
 await q("insert into public.metrics(node_id,name,ts,value) values ($1,'cpu_percent', now() - interval '30 days', 1)", [N]);
 await q("insert into public.node_heartbeats(node_id,ts) values ($1, now() - interval '30 days')", [N]);
