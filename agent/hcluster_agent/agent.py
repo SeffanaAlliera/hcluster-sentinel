@@ -99,10 +99,12 @@ class Agent:
                     if name.startswith("disk_") and label and (name, label) not in have:
                         values.append(_entry(name, label, v, "local"))
             if cfg.local_fallback:
-                for name in list(unavailable):
-                    got = [(k, v) for k, v in local.items() if k[0] == name]
-                    if got:                           # fill the whole metric (every drive / NIC) from the kernel
-                        values.extend(_entry(k[0], k[1], v, "local") for k, v in got)
+                # Fill from the kernel every metric Prometheus did not deliver: queries that returned nothing AND
+                # metrics the config has no query for at all (e.g. a config written before cpu_temp existed).
+                have_names = {e["name"] for e in values}
+                for name in sorted({k[0] for k in local} - have_names):
+                    values.extend(_entry(k[0], k[1], v, "local") for k, v in local.items() if k[0] == name)
+                    if name in unavailable:
                         unavailable.remove(name)
             for name, err in pr.errors.items():
                 log.debug("query %s failed: %s", name, err)
@@ -146,6 +148,12 @@ class Agent:
             self.stop = True
         signal.signal(signal.SIGTERM, _stop)
         signal.signal(signal.SIGINT, _stop)
+        from .localmetrics import list_sensors, read_cpu_temp
+        t0 = read_cpu_temp()
+        if t0 is None:
+            log.warning("no CPU temperature sensor found; kernel exposes: %s", "; ".join(list_sensors()) or "nothing (try: sudo modprobe coretemp)")
+        else:
+            log.info("CPU temperature sensor OK (%.1f C)", t0)
         log.info("hcluster-agent %s starting for node %s -> %s", __version__, self.cfg.node_id, self.cfg.api_url)
         sd_notify("READY=1")
         while not self.stop:

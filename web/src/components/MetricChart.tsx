@@ -29,7 +29,7 @@ export function MetricChart({ title, data, series, unit, spanMs }: { title: stri
           </ResponsiveContainer>
         </div>
       )}
-      {series.length > 1 && <div className="mt-2 flex gap-4 text-xs text-slate-400">{series.map((s) => (<span key={s.key} className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: s.color }} />{s.label}</span>))}</div>}
+      {series.length > 1 && <div className="mt-2 flex max-h-24 flex-wrap gap-x-4 gap-y-1 overflow-y-auto text-xs text-slate-400">{series.map((s) => (<span key={s.key} className="inline-flex max-w-full items-center gap-1.5"><span className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.color }} /><span className="truncate">{s.label}</span></span>))}</div>}
     </div>
   );
 }

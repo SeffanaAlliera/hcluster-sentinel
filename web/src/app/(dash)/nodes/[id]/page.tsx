@@ -42,8 +42,10 @@ export default async function NodePage({ params, searchParams }: { params: Promi
     for (const sr of series) for (const [t, v] of sr.pts) { const r = m.get(t) ?? ({ t } as Row); r[sr.key] = v; m.set(t, r); }
     return { data: [...m.values()].sort((x, y) => x.t - y.t), series: series.filter((x) => x.pts.length).map(({ key, label, color }) => ({ key, label, color })) };
   };
-  const COLORS = ['#fbbf24', '#38bdf8', '#a78bfa', '#34d399', '#f472b6', '#fb923c', '#22d3ee', '#e879f9'];
-  const driveMounts = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('disk_percent|')).map((k) => k.slice('disk_percent|'.length)))].sort();
+  const COLORS = ['#fbbf24', '#38bdf8', '#a78bfa', '#34d399', '#f472b6', '#fb923c', '#22d3ee', '#e879f9', '#a3e635', '#f87171', '#2dd4bf', '#818cf8', '#facc15', '#94a3b8'];
+  const currentMounts = new Set(driveList.map((d) => d.mount));      // hide drives that are no longer reported (e.g. old /boot/efi history)
+  const driveMounts = [...new Set(Object.keys(ms.series).filter((k) => k.startsWith('disk_percent|')).map((k) => k.slice('disk_percent|'.length)))]
+    .filter((m) => currentMounts.size === 0 || currentMounts.has(m)).sort();
   const cpuC = build([{ name: 'cpu_percent', label: '', legend: 'CPU', color: '#38bdf8' }]);
   const tempC = build([{ name: 'cpu_temp_celsius', label: '', legend: 'CPU temp', color: '#fb923c' }]);
   const memC = build([{ name: 'mem_percent', label: '', legend: 'Memory', color: '#a78bfa' }]);

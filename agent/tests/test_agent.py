@@ -338,6 +338,7 @@ class DriveMergeTests(unittest.TestCase):
         cfg = mkcfg(prometheus=C.PrometheusConfig(enabled=True), **over)
         ag = Agent(cfg)
         d = tempfile.mkdtemp(); open(f"{d}/mounts", "w").write(mounts)
+        open(f"{d}/meminfo", "w").write("MemTotal: 4000000 kB\nMemAvailable: 1000000 kB\n")
         ag.local.proc = d
         orig_stat, orig_collect = os.statvfs, A.prom_collect
         fake = os.statvfs_result((4096, 4096, 1000, 400, 300, 0, 0, 0, 0, 255))
@@ -347,6 +348,11 @@ class DriveMergeTests(unittest.TestCase):
             return {(e["name"], e.get("label", "")): e["source"] for e in ag.collect_metrics()["values"]}
         finally:
             os.statvfs, A.prom_collect = orig_stat, orig_collect
+
+    def test_metric_without_a_prometheus_query_is_filled_locally(self):
+        got = self.run_agent({("cpu_percent", ""): 5.0}, ) 
+        self.assertEqual(got[("cpu_percent", "")], "prometheus")
+        self.assertEqual(got[("mem_percent", "")], "local")          # no mem query configured -> kernel value, not silence
 
     def test_missing_drives_added_and_efi_dropped(self):
         got = self.run_agent({("disk_percent", "/"): 40.0, ("disk_percent", "/boot/efi"): 2.0,
