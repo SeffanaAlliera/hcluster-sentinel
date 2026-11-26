@@ -10,7 +10,7 @@ export interface NodeRow {
   metrics_status: string; metrics_unavailable: string[]; created_at: string;
 }
 export interface ServiceRow {
-  id: string; node_id: string; key: string; name: string; check_type: 'http' | 'tcp' | 'dns'; target: string | null;
+  id: string; node_id: string; key: string; name: string; check_type: 'http' | 'tcp' | 'dns' | 'process'; target: string | null;
   enabled: boolean; status: Health; response_ms: number | null; http_status: number | null;
   last_checked_at: string | null; last_success_at: string | null; last_error: string | null;
 }

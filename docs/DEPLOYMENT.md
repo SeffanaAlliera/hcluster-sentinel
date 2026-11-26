@@ -94,3 +94,32 @@ Updating the web app = `git push` (Vercel redeploys). New SQL migrations: run th
 cd web && cp .env.example .env.local   # fill in, then: npm install && npm run dev
 scripts/test-all.sh                    # all automated tests
 ```
+
+## How to update (after you receive new code)
+Updates have three independent parts. Do only the parts that changed (the release notes / my message will say which).
+
+1. **Put the new code in your repo** (on the PC where your clone lives):
+   ```bash
+   cd hcluster-sentinel
+   unzip -o ~/Downloads/hcluster-sentinel.zip -d /tmp/hcs && cp -r /tmp/hcs/hcluster-sentinel/. .
+   git status && git diff --stat       # review what changed
+   git add -A && git commit -m "Update Sentinel" && git push
+   ```
+2. **Web app:** `git push` is enough. Vercel rebuilds and deploys automatically (watch Deployments; env vars are kept).
+3. **Database:** only if there is a NEW file in `supabase/migrations/` (higher number than you have applied). Open the Supabase SQL Editor and run just the new file(s), in order. Never re-run old ones. Migrations are additive and safe to apply with the dashboard live.
+4. **Each node's agent:** on h1 (and h2/h3), over Tailscale SSH:
+   ```bash
+   cd ~/hcluster-sentinel && git pull && sudo ./agent/update.sh
+   ```
+   `update.sh` replaces only the code and restarts the service; your `/etc/hcluster-agent/config.yaml` and token are untouched. If a release adds new config options (e.g. a new service type), compare with `agent/config.example.yaml` and edit your config, then `sudo systemctl restart hcluster-agent`.
+
+### Upgrading a database you already filled with data (nodes, API tokens, history)
+If you applied 0001–0003 from an **earlier zip**, do **not** reset anything. Your nodes, token hashes and history are kept, and agents keep using their existing tokens. In the Supabase SQL Editor, run these three files **in this order**, each as its own query:
+
+1. `supabase/migrations/20260101000006_upgrade_labels.sql` (adds `dns`/`process` check types and the metric `label` column; idempotent)
+2. `supabase/migrations/20260101000003_functions.sql` (create-or-replace, safe to re-run)
+3. `supabase/migrations/20260101000005_process_check.sql`
+
+Do **not** re-run 0001 or 0002. Existing metric rows become "node-wide" (empty label). Then push the web code, run `git pull && sudo ./agent/update.sh` on each node, and add any new services (e.g. `dnsmasq-dhcp`) to the node's config. `supabase/tests/upgrade.mjs` tests this path against a copy of the old schema.
+
+Order when a release changes both sides: **database → web → agents** (new agents may send fields old servers reject; old agents always work with new servers).

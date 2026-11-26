@@ -28,7 +28,7 @@ class ConfigError(Exception):
 class ServiceCheck:
     key: str
     name: str
-    type: str                      # http | tcp | dns
+    type: str                      # http | tcp | dns | process
     enabled: bool = True
     url: str | None = None         # http
     host: str | None = None        # tcp
@@ -42,12 +42,18 @@ class ServiceCheck:
     retries: int = 1
     report_target: bool = True
     query_name: str = "example.com"  # dns
+    process_name: str | None = None  # process: name as shown in /proc/<pid>/comm (max 15 chars)
+    listen_udp: list[int] = field(default_factory=list)   # process: UDP ports that must be bound
+    listen_tcp: list[int] = field(default_factory=list)   # process: TCP ports that must be LISTENing
 
     def target(self) -> str:
         if self.type == "http":
             return self.url or ""
         if self.type == "dns":
             return f"{self.host}:{self.port} (query {self.query_name})"
+        if self.type == "process":
+            ports = [f"udp/{p}" for p in self.listen_udp] + [f"tcp/{p}" for p in self.listen_tcp]
+            return f"process {self.process_name}" + (f" listening {','.join(ports)}" if ports else "")
         return f"{self.host}:{self.port}"
 
 
@@ -147,8 +153,8 @@ def parse_services(raw: list[dict] | None) -> list[ServiceCheck]:
             raise ConfigError(f"{ctx}: duplicate key '{key}'")
         seen.add(key)
         typ = str(_req(s, "type", ctx)).lower()
-        if typ not in ("http", "tcp", "dns"):
-            raise ConfigError(f"{ctx}: type must be http, tcp or dns")
+        if typ not in ("http", "tcp", "dns", "process"):
+            raise ConfigError(f"{ctx}: type must be http, tcp, dns or process")
         sc = ServiceCheck(
             key=key, name=str(s.get("name") or key), type=typ,
             enabled=bool(s.get("enabled", True)),
@@ -166,6 +172,12 @@ def parse_services(raw: list[dict] | None) -> list[ServiceCheck]:
                 raise ConfigError(f"{ctx}: url must be http(s)")
             sc.url = url
             sc.expected_status = parse_status_ranges(s.get("expected_status"))
+        elif typ == "process":
+            sc.process_name = str(_req(s, "process_name", ctx))
+            sc.listen_udp = [int(x) for x in (s.get("listen_udp") or [])]
+            sc.listen_tcp = [int(x) for x in (s.get("listen_tcp") or [])]
+            if any(not 1 <= x <= 65535 for x in sc.listen_udp + sc.listen_tcp):
+                raise ConfigError(f"{ctx}: listen ports out of range")
         else:
             sc.host = str(s.get("host", "127.0.0.1"))
             sc.port = int(s.get("port", 53)) if typ == "dns" else int(_req(s, "port", ctx))

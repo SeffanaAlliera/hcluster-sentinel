@@ -48,7 +48,7 @@ Each metric is `(name, label)`; label `''` = node-wide, otherwise a mountpoint o
 | `disk_percent`, `disk_available_bytes`, `disk_total_bytes` | mountpoint | **every** real drive, auto-detected (ext4/xfs/btrfs/zfs/ntfs…; docker/overlay/tmpfs/boot/bind duplicates skipped) |
 | `net_rx_bytes_per_sec`, `net_tx_bytes_per_sec` | interface; `''` = **sum of all listed NICs** | physical NICs individually + combined total; virtual NICs (lo, docker, veth, br-, virbr, tailscale) excluded |
 
-Service check types: `http`, `tcp`, `dns` (real UDP DNS query: for dnsmasq / Pi-hole resolvers).
+Service check types: `http`, `tcp`, `dns` (real UDP DNS query, for resolvers), `process` (process running + bound to given UDP/TCP ports via /proc; e.g. a DHCP-only dnsmasq).
 
 ## Data & retention (defaults, table `sentinel_settings`)
 metrics 14 d · service_checks 14 d · heartbeats 7 d · resolved incidents 365 d · rate-limit rows 1 d. At 10 metrics/min/node ≈ 14k rows/day/node (~1 MB/day). Purged daily by `purge_old_data()`.

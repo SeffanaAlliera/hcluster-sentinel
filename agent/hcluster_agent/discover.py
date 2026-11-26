@@ -40,7 +40,8 @@ SERVICE_CANDIDATES = [
     ("samba", "Samba", "tcp", ["127.0.0.1:445"]),
     ("portainer", "Portainer", "http", ["http://127.0.0.1:9000/api/system/status", "https://127.0.0.1:9443/api/system/status"]),
     ("gptwol", "GPTWOL", "http", ["http://127.0.0.1:5000/"]),
-    ("dnsmasq", "dnsmasq (DNS)", "dns", ["127.0.0.1:53"]),
+    ("dnsmasq", "dnsmasq (DHCP)", "process", ["dnsmasq:udp67"]),
+    ("dns", "Local DNS resolver", "dns", ["127.0.0.1:53"]),
 ]
 
 
@@ -88,6 +89,12 @@ def probe_service(key: str, name: str, typ: str, target: str) -> tuple[bool, str
         sc = ServiceCheck(key=key, name=name, type="http", url=target, timeout_seconds=4, retries=0, degraded_after_ms=None, verify_tls=False)
         sc.expected_status = [(200, 399)]
         snippet = {"key": key, "name": name, "type": "http", "url": target}
+    elif typ == "process":
+        pname, _, spec = target.partition(":")
+        udp = [int(spec[3:])] if spec.startswith("udp") else []
+        tcp = [int(spec[3:])] if spec.startswith("tcp") else []
+        sc = ServiceCheck(key=key, name=name, type="process", process_name=pname, listen_udp=udp, listen_tcp=tcp, retries=0)
+        snippet = {"key": key, "name": name, "type": "process", "process_name": pname, "listen_udp": udp, "listen_tcp": tcp}
     else:
         host, _, port = target.partition(":")
         sc = ServiceCheck(key=key, name=name, type=typ, host=host, port=int(port), timeout_seconds=4, retries=0, degraded_after_ms=None)
@@ -185,6 +192,8 @@ def discover(prom_urls: list[str], proc: str = "/proc") -> int:
             print(f"  - key: {s['key']}\n    name: {s['name']}\n    type: {s['type']}")
             if s["type"] == "http":
                 print(f"    url: {s['url']}" + ("\n    verify_tls: false" if s["url"].startswith("https") else ""))
+            elif s["type"] == "process":
+                print(f"    process_name: {s['process_name']}" + (f"\n    listen_udp: {s['listen_udp']}" if s["listen_udp"] else "") + (f"\n    listen_tcp: {s['listen_tcp']}" if s["listen_tcp"] else ""))
             else:
                 print(f"    host: {s['host']}\n    port: {s['port']}")
     return 0

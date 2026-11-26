@@ -91,8 +91,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(generic.services, [])                       # new nodes start with NO assumed services
         self.assertGreaterEqual(len(generic.prometheus.queries), 10)
         h1 = load("config.h1.example.yaml")
-        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq"})
-        self.assertEqual(next(x for x in h1.services if x.key == "dnsmasq").type, "dns")
+        self.assertEqual({s.key for s in h1.services}, {"jellyfin", "immich", "pihole", "syncthing", "samba", "portainer", "gptwol", "dnsmasq-dhcp"})
+        self.assertEqual(next(x for x in h1.services if x.key == "dnsmasq-dhcp").type, "process")
         names = {(q.name, q.label_by) for q in generic.prometheus.queries}
         self.assertIn(("disk_percent", "mountpoint"), names)
         self.assertIn(("net_rx_bytes_per_sec", "device"), names)
@@ -311,6 +311,52 @@ class LocalMetricsTests(unittest.TestCase):
     def test_missing_proc_does_not_raise(self):
         lc = LocalCollector(["/nonexistent-mount"], [], proc="/nonexistent-proc", sys_root="/nonexistent")
         self.assertEqual(lc.collect(), {})
+
+
+class ProcessCheckTests(unittest.TestCase):
+    def fake(self, comms=("systemd", "dnsmasq"), udp=(67,), tcp=()):
+        d = tempfile.mkdtemp(); os.makedirs(f"{d}/net")
+        for i, c in enumerate(comms):
+            os.makedirs(f"{d}/{100 + i}"); open(f"{d}/{100 + i}/comm", "w").write(c + "\n")
+        os.makedirs(f"{d}/self")                                           # non-numeric dirs are ignored
+        hdr = "  sl  local_address rem_address   st\n"
+        open(f"{d}/net/udp", "w").write(hdr + "".join(f"  0: 0132A8C0:{p:04X} 00000000:0000 07 0\n" for p in udp))
+        open(f"{d}/net/tcp", "w").write(hdr + "".join(f"  0: 00000000:{p:04X} 00000000:0000 0A 0\n" for p in tcp) + "  1: 00000000:0050 0A0A0A0A:0001 01 0\n")
+        return d
+
+    def chk(self, proc, **kw):
+        from hcluster_agent.checks import _process_once
+        return _process_once(C.ServiceCheck(key="p", name="p", type="process", process_name="dnsmasq", **kw), proc)
+
+    def test_running_and_listening(self):
+        self.assertEqual(self.chk(self.fake(), listen_udp=[67]).status, "operational")
+        self.assertEqual(self.chk(self.fake(tcp=(8080,)), listen_tcp=[8080]).status, "operational")
+
+    def test_not_running_or_not_bound(self):
+        r = self.chk(self.fake(comms=("systemd",)), listen_udp=[67]); self.assertEqual(r.status, "down"); self.assertIn("not running", r.error)
+        r = self.chk(self.fake(udp=()), listen_udp=[67]); self.assertEqual(r.status, "down"); self.assertIn("udp/67", r.error)
+        self.assertEqual(self.chk(self.fake(tcp=()), listen_tcp=[80]).status, "down")          # an ESTABLISHED (0x01) socket is not a listener
+
+    def test_long_names_truncated_like_the_kernel(self):
+        from hcluster_agent.checks import _process_once
+        sc = C.ServiceCheck(key="p", name="p", type="process", process_name="averyveryverylongprocessname")
+        self.assertEqual(_process_once(sc, self.fake(comms=("averyveryverylo",))).status, "operational")
+
+    def test_real_proc(self):
+        import socket as so
+        s = so.socket(so.AF_INET, so.SOCK_DGRAM); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+        me = open("/proc/self/comm").read().strip()
+        from hcluster_agent.checks import _process_once
+        sc = C.ServiceCheck(key="p", name="p", type="process", process_name=me, listen_udp=[port])
+        self.assertEqual(_process_once(sc).status, "operational")
+        s.close()
+        self.assertEqual(_process_once(sc).status, "down")
+
+    def test_config(self):
+        cfg = C.load_config(write_cfg(f"node: {{id: '{NODE}'}}\napi: {{url: 'https://x.example.com'}}\nservices:\n  - {{key: dm, type: process, process_name: dnsmasq, listen_udp: [67]}}\n"), {"HCLUSTER_TOKEN": "t"})
+        self.assertEqual(cfg.services[0].target(), "process dnsmasq listening udp/67")
+        with self.assertRaises(C.ConfigError):
+            C.load_config(write_cfg(f"node: {{id: '{NODE}'}}\napi: {{url: 'https://x.example.com'}}\nservices:\n  - {{key: dm, type: process}}\n"), {"HCLUSTER_TOKEN": "t"})
 
 
 class LabeledPrometheusTests(unittest.TestCase):

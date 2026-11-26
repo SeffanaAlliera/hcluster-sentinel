@@ -1,6 +1,7 @@
 """Service availability checks (HTTP / TCP). No credentials, no side effects."""
 from __future__ import annotations
 
+import os
 import random
 import socket
 import ssl
@@ -110,9 +111,47 @@ def _dns_once(sc: ServiceCheck) -> CheckResult:
     return CheckResult("operational", ms, None, None)
 
 
+def _bound_ports(proc: str, files: tuple[str, ...], listen_only: bool) -> set[int]:
+    ports: set[int] = set()
+    for f in files:
+        try:
+            lines = open(f"{proc}/net/{f}", encoding="utf-8").read().splitlines()[1:]
+        except OSError:
+            continue
+        for ln in lines:
+            cols = ln.split()
+            if len(cols) > 3 and (not listen_only or cols[3] == "0A"):
+                ports.add(int(cols[1].rsplit(":", 1)[1], 16))
+    return ports
+
+
+def _process_once(sc: ServiceCheck, proc: str = "/proc") -> CheckResult:
+    """Is the process running, and are the expected ports bound? Read-only /proc inspection; sends no packets."""
+    want = (sc.process_name or "")[:15]                        # /proc/<pid>/comm is truncated to 15 chars
+    found = False
+    try:
+        for pid in os.listdir(proc):
+            if pid.isdigit():
+                try:
+                    if open(f"{proc}/{pid}/comm", encoding="utf-8").read().strip() == want:
+                        found = True
+                        break
+                except OSError:
+                    continue
+    except OSError as e:
+        return CheckResult("down", None, None, _short(e))
+    if not found:
+        return CheckResult("down", None, None, f"process '{sc.process_name}' is not running")
+    missing = [f"udp/{p}" for p in sc.listen_udp if p not in _bound_ports(proc, ("udp", "udp6"), False)]
+    missing += [f"tcp/{p}" for p in sc.listen_tcp if p not in _bound_ports(proc, ("tcp", "tcp6"), True)]
+    if missing:
+        return CheckResult("down", None, None, f"'{sc.process_name}' running but not listening on {', '.join(missing)}")
+    return CheckResult("operational", None, None, None)
+
+
 def run_check(sc: ServiceCheck, sleep=time.sleep) -> CheckResult:
     """Runs the check, retrying `retries` times on failure to absorb transient blips."""
-    fn = {"http": _http_once, "tcp": _tcp_once, "dns": _dns_once}[sc.type]
+    fn = {"http": _http_once, "tcp": _tcp_once, "dns": _dns_once, "process": _process_once}[sc.type]
     res = fn(sc)
     attempts = 0
     while res.status == "down" and attempts < sc.retries:

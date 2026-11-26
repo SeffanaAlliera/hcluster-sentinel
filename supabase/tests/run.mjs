@@ -125,6 +125,10 @@ const fut = await ingest(N, C, [report({ collected_at: new Date(Date.now() + 360
 ok(fut.accepted === 1, 'future timestamp is clamped, not rejected');
 ok((await one('select max(ts) m from public.node_heartbeats where node_id=$1', [N])).m <= new Date(Date.now() + 60_000), 'a +1h timestamp was clamped (no heartbeat beyond the 5-min skew allowance)');
 
+console.log('\nprocess check type');
+await ingest(N, C, [report({ collected_at: new Date(Date.now() + 8500).toISOString(), services: [{ key: 'dnsmasq-dhcp', name: 'dnsmasq', type: 'process', target: 'process dnsmasq listening udp/67', status: 'operational' }] })]);
+ok((await one("select check_type from public.services where key='dnsmasq-dhcp' and node_id=$1", [N])).check_type === 'process', "'process' check type accepted");
+
 console.log('\nlabeled metrics (multi-drive / per-NIC)');
 await ingest(N, C, [report({ collected_at: new Date(Date.now() + 9000).toISOString(), metrics_report: metricsReport('ok', 'ok', [
   { name: 'disk_percent', label: '/', value: 40, source: 'local' }, { name: 'disk_percent', label: '/mnt/media', value: 85, source: 'local' },

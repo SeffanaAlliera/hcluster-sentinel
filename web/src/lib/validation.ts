@@ -14,7 +14,7 @@ const iso = z.string().datetime({ offset: true });
 const service = z.object({
   key: z.string().regex(KEY_RE),
   name: text(80).pipe(z.string().min(1)),
-  type: z.enum(['http', 'tcp', 'dns']),
+  type: z.enum(['http', 'tcp', 'dns', 'process']),
   target: optText(300),
   status: z.enum(['operational', 'degraded', 'down']),
   response_ms: z.number().int().min(0).max(600_000).nullish(),

@@ -119,12 +119,13 @@ services:
     url: "http://127.0.0.1:5000/"                    # VERIFY: the host port you mapped for the gptwol container
     expected_status: "200-399"
 
-  - key: dnsmasq
-    name: dnsmasq (DNS)
-    type: dns                                        # sends a real DNS query over UDP; any valid answer = alive
-    host: 127.0.0.1
-    port: 53                                         # VERIFY: if Pi-hole owns 53, dnsmasq is on another IP/port
-    query_name: example.com
+  # dnsmasq used as a DHCP-only server (port=0 disables its DNS), so there is nothing to query: we check the
+  # process is alive AND bound to the DHCP port. Sends no packets, so it never creates a DHCP lease.
+  - key: dnsmasq-dhcp
+    name: dnsmasq (guest DHCP)
+    type: process
+    process_name: dnsmasq
+    listen_udp: [67]
 
   # Optional: show where a check goes only to admins. Set report_target: false to never send the URL/host.
   # - key: example
