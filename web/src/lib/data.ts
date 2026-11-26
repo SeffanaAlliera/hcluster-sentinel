@@ -48,7 +48,7 @@ export async function listServices(sb: SupabaseClient, nodeId?: string) {
 }
 
 export async function listIncidents(sb: SupabaseClient, opts: { nodeId?: string; openOnly?: boolean; limit?: number } = {}) {
-  let q = sb.from('incidents').select('*, nodes(display_name), services(name)').order('started_at', { ascending: false }).limit(opts.limit ?? 100);
+  let q = sb.from('incidents').select('*, nodes(display_name,timezone), services(name)').order('started_at', { ascending: false }).limit(opts.limit ?? 100);
   if (opts.nodeId) q = q.eq('node_id', opts.nodeId);
   if (opts.openOnly) q = q.is('resolved_at', null);
   const { data, error } = await q;

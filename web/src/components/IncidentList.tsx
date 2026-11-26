@@ -1,5 +1,5 @@
 import type { IncidentRow } from '@/lib/status';
-import { ago, incidentLength, utc } from '@/lib/format';
+import { ago, fmtTime, incidentLength } from '@/lib/format';
 import { StatusBadge } from './StatusBadge';
 
 const KIND: Record<IncidentRow['kind'], { down: string; up: string }> = {
@@ -23,8 +23,8 @@ export function IncidentList({ items, showNode = true }: { items: IncidentRow[];
               {where && <span className="text-slate-400">— {where}</span>}
             </div>
             <div className="mt-1 text-xs text-slate-400">
-              ▼ {KIND[i.kind].down} at <span className="font-mono">{utc(i.started_at)}</span> ({ago(i.started_at)})
-              {i.resolved_at && <><br />▲ {KIND[i.kind].up} at <span className="font-mono">{utc(i.resolved_at)}</span> · lasted {incidentLength(i.started_at, i.resolved_at)}{i.resolved_reason ? ` · ${i.resolved_reason}` : ''}</>}
+              ▼ {KIND[i.kind].down} at <span className="font-mono">{fmtTime(i.started_at, i.nodes?.timezone)}</span> ({ago(i.started_at)})
+              {i.resolved_at && <><br />▲ {KIND[i.kind].up} at <span className="font-mono">{fmtTime(i.resolved_at, i.nodes?.timezone)}</span> · lasted {incidentLength(i.started_at, i.resolved_at)}{i.resolved_reason ? ` · ${i.resolved_reason}` : ''}</>}
             </div>
             {i.detail && <div className="mt-1 truncate font-mono text-xs text-slate-500" title={i.detail}>{i.detail}</div>}
           </li>

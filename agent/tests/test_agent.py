@@ -329,6 +329,17 @@ class LocalMetricsTests(unittest.TestCase):
         stats(10, 10); t[0] = 104.0                                                  # counter reset: skipped, not negative
         self.assertNotIn(("disk_read_bytes_per_sec", "/mnt/media"), lc.collect())
 
+    def test_timezone_detected(self):
+        from hcluster_agent.localmetrics import read_timezone
+        d = tempfile.mkdtemp()
+        self.assertIsNone(read_timezone(d) if not os.environ.get("TZ") else None)    # nothing configured: not invented
+        open(f"{d}/timezone", "w").write("Asia/Manila\n")
+        self.assertEqual(read_timezone(d), "Asia/Manila")
+        os.remove(f"{d}/timezone")
+        os.makedirs(f"{d}/usr/share/zoneinfo/Asia"); open(f"{d}/usr/share/zoneinfo/Asia/Tokyo", "w").write("x")
+        os.symlink(f"{d}/usr/share/zoneinfo/Asia/Tokyo", f"{d}/localtime")           # Ubuntu uses a localtime symlink
+        self.assertEqual(read_timezone(d), "Asia/Tokyo")
+
     def test_host_info_has_cpu_model(self):
         from hcluster_agent.localmetrics import host_info
         d = tempfile.mkdtemp()

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { requireAdminPage } from '@/lib/auth';
 import { getNode, listIncidents, listServices, metricSeries } from '@/lib/data';
 import { effectiveNodeStatus } from '@/lib/status';
-import { ago, bytes, duration, pct, utc } from '@/lib/format';
+import { ago, bytes, duration, fmtTime, pct, tzLabel } from '@/lib/format';
 import { RANGES, parseRange } from '@/lib/validation';
 import { drives, nics, pick, seriesKey, worstDrive, type LatestRow } from '@/lib/metrics';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -73,6 +73,7 @@ export default async function NodePage({ params, searchParams }: { params: Promi
           <StatusBadge status={node.enabled ? eff : 'disabled'} />
           <span className="font-mono text-xs text-slate-500">{node.hostname}</span>
         </div>
+        <p className="mt-1 text-xs text-slate-500">All times on this page are in the node's own timezone: {node.timezone ? tzLabel(node.timezone) : 'unknown, showing UTC'}.</p>
         {node.enabled && node.status_reason && eff !== 'online' && <p className="mt-1 text-sm text-slate-400">{node.status_reason}</p>}
       </div>
 
@@ -104,14 +105,14 @@ export default async function NodePage({ params, searchParams }: { params: Promi
       <section>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Metrics</h2><RangeTabs base={`/nodes/${id}`} current={range} /></div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <MetricChart title="CPU utilisation" subtitle={cpuName} unit="percent" spanMs={span} {...cpuC} />
-          <MetricChart title="CPU temperature" subtitle={cpuName} unit="celsius" spanMs={span} {...tempC} />
-          <MetricChart title="Memory utilisation" subtitle={ramName} unit="percent" spanMs={span} {...memC} />
-          <MetricChart title={`Disk utilisation${driveMounts.length > 1 ? ` (${driveMounts.length} drives)` : ''}`} unit="percent" spanMs={span} {...diskC} />
-          <MetricChart title="Disk read throughput (per drive)" unit="bytes" spanMs={span} {...readC} />
-          <MetricChart title="Disk write throughput (per drive)" unit="bytes" spanMs={span} {...writeC} />
-          <MetricChart title="Network throughput — all NICs combined" unit="bytes" spanMs={span} {...netC} />
-          {nicCharts.length > 1 && nicCharts.map(({ n, c }) => <MetricChart key={n} title={`Network — ${n}`} unit="bytes" spanMs={span} {...c} />)}
+          <MetricChart title="CPU utilisation" subtitle={cpuName} unit="percent" spanMs={span} tz={node.timezone} {...cpuC} />
+          <MetricChart title="CPU temperature" subtitle={cpuName} unit="celsius" spanMs={span} tz={node.timezone} {...tempC} />
+          <MetricChart title="Memory utilisation" subtitle={ramName} unit="percent" spanMs={span} tz={node.timezone} {...memC} />
+          <MetricChart title={`Disk utilisation${driveMounts.length > 1 ? ` (${driveMounts.length} drives)` : ''}`} unit="percent" spanMs={span} tz={node.timezone} {...diskC} />
+          <MetricChart title="Disk read throughput (per drive)" unit="bytes" spanMs={span} tz={node.timezone} {...readC} />
+          <MetricChart title="Disk write throughput (per drive)" unit="bytes" spanMs={span} tz={node.timezone} {...writeC} />
+          <MetricChart title="Network throughput — all NICs combined" unit="bytes" spanMs={span} tz={node.timezone} {...netC} />
+          {nicCharts.length > 1 && nicCharts.map(({ n, c }) => <MetricChart key={n} title={`Network — ${n}`} unit="bytes" spanMs={span} tz={node.timezone} {...c} />)}
         </div>
         {driveList.length > 0 && (
           <div className="card mt-4 p-4">
@@ -135,7 +136,7 @@ export default async function NodePage({ params, searchParams }: { params: Promi
       <section className="card space-y-3 p-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Node details</h2>
         <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          {([['Node ID', node.id], ['OS', node.os ?? '—'], ['Architecture', node.arch ?? '—'], ['Kernel', node.kernel ?? '—'], ['Agent', node.agent_version ?? '—'], ['Registered', utc(node.created_at)], ['Heartbeat / offline after', `${node.heartbeat_interval_seconds}s / ${node.offline_threshold_seconds}s`], ['Last heartbeat', utc(node.last_heartbeat_at)]] as const).map(([k, v]) => (
+          {([['Node ID', node.id], ['OS', node.os ?? '—'], ['Architecture', node.arch ?? '—'], ['Kernel', node.kernel ?? '—'], ['Agent', node.agent_version ?? '—'], ['Registered', fmtTime(node.created_at, node.timezone)], ['Heartbeat / offline after', `${node.heartbeat_interval_seconds}s / ${node.offline_threshold_seconds}s`], ['Last heartbeat', fmtTime(node.last_heartbeat_at, node.timezone)], ['Node timezone', node.timezone ? tzLabel(node.timezone) : 'unknown (showing UTC)']] as const).map(([k, v]) => (
             <div key={k}><dt className="text-xs text-slate-500">{k}</dt><dd className="break-all font-mono text-xs text-slate-200">{v}</dd></div>))}
         </dl>
         <NodeActions id={node.id} enabled={node.enabled} hb={node.heartbeat_interval_seconds} off={node.offline_threshold_seconds} />

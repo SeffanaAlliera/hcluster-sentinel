@@ -118,8 +118,9 @@ If you applied 0001–0003 from an **earlier zip**, do **not** reset anything. Y
 
 1. `supabase/migrations/20260101000006_upgrade_labels.sql` (adds `dns`/`process` check types and the metric `label` column; idempotent)
 2. `supabase/migrations/20260101000007_host_cpu.sql` (adds CPU model / thread count columns shown on the node page)
-3. `supabase/migrations/20260101000003_functions.sql` (create-or-replace, safe to re-run)
-4. `supabase/migrations/20260101000005_process_check.sql`
+3. `supabase/migrations/20260101000008_node_timezone.sql` (stores each node's timezone so the dashboard shows node-local time)
+4. `supabase/migrations/20260101000003_functions.sql` (create-or-replace, safe to re-run)
+5. `supabase/migrations/20260101000005_process_check.sql`
 
 Do **not** re-run 0001 or 0002. Existing metric rows become "node-wide" (empty label). Then push the web code, run `git pull && sudo ./agent/update.sh` on each node, and add any new services (e.g. `dnsmasq-dhcp`) to the node's config. `supabase/tests/upgrade.mjs` tests this path against a copy of the old schema.
 

@@ -47,7 +47,7 @@ export const report = z.object({
   collected_at: iso,
   agent: z.object({ version: text(32) }).partial().optional(),
   host: z.object({
-    hostname: optText(253), os: optText(120), arch: optText(40), kernel: optText(80), cpu_model: optText(120),
+    hostname: optText(253), os: optText(120), arch: optText(40), kernel: optText(80), cpu_model: optText(120), timezone: optText(64),
     cpu_cores: z.number().int().min(1).max(4096).nullish(),
     uptime_seconds: z.number().int().min(0).max(1e10).nullish(),
   }).partial().optional(),

@@ -3,6 +3,7 @@ import { buildToken, hashSecret, newSecret, parseBearer, parseToken, verifySecre
 import { agentPayload, nodeCreate, parseRange } from '../validation';
 import { effectiveNodeStatus, effectiveServiceStatus } from '../status';
 import { memoryLimit } from '../ratelimit';
+import { fmtTime, tzLabel, zoneParts } from '../format';
 import { drives, nics, pick, seriesKey, worstDrive, type LatestRow } from '../metrics';
 
 const NODE = '11111111-2222-3333-4444-555555555555';
@@ -124,5 +125,26 @@ describe('labeled metrics', () => {
     expect(agentPayload.parse(mr({ name: 'cpu_percent', value: 3 })).reports[0].metrics_report!.values[0].label).toBe('');
     expect(agentPayload.parse(mr({ name: 'disk_percent', label: 'x'.repeat(100), value: 3 })).reports[0].metrics_report!.values[0].label).toHaveLength(64);
     expect(agentPayload.safeParse(base({ services: [{ key: 'dnsmasq', name: 'dnsmasq', type: 'dns', status: 'operational' }] })).success).toBe(true);
+  });
+});
+
+describe('node-local time display', () => {
+  it('shows the instant in the node timezone, with an explicit offset', () => {
+    expect(fmtTime('2026-11-26T07:10:32Z', 'Asia/Manila')).toBe('2026-11-26 15:10:32 UTC+8');
+    expect(fmtTime('2026-11-26T07:10:32Z', 'America/New_York')).toBe('2026-11-26 02:10:32 UTC-5');
+    expect(fmtTime('2026-11-26T07:10:32Z', null)).toBe('2026-11-26 07:10:32 UTC');
+    expect(fmtTime(null, 'Asia/Manila')).toBe('—');
+  });
+  it('falls back to UTC for an unknown zone instead of crashing', () => {
+    expect(fmtTime('2026-11-26T07:10:32Z', 'Not/AZone')).toBe('2026-11-26 07:10:32 UTC');
+  });
+  it('chart axis parts and zone label', () => {
+    const z = zoneParts(Date.parse('2026-11-26T23:30:00Z'), 'Asia/Manila');
+    expect([z.D, z.h, z.m]).toEqual(['27', '07', '30']);                 // crosses midnight in node time
+    expect(tzLabel('Asia/Manila')).toBe('Asia/Manila (UTC+8)');
+    expect(tzLabel(null)).toBe('UTC');
+  });
+  it('accepts the agent-reported timezone', () => {
+    expect(agentPayload.parse(base({ host: { timezone: 'Asia/Manila' } })).reports[0].host!.timezone).toBe('Asia/Manila');
   });
 });

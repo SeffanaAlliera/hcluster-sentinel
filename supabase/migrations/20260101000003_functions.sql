@@ -126,6 +126,7 @@ begin
       kernel         = coalesce(left(v_host->>'kernel', 80), kernel),
       cpu_model      = coalesce(left(v_host->>'cpu_model', 120), cpu_model),
       cpu_cores      = coalesce(nullif(v_host->>'cpu_cores', '')::integer, cpu_cores),
+      timezone       = coalesce((select z.name from pg_timezone_names z where z.name = left(v_host->>'timezone', 64) limit 1), timezone),
       agent_version  = coalesce(left(p_report #>> '{agent,version}', 32), agent_version),
       uptime_seconds = coalesce(nullif(v_host->>'uptime_seconds', '')::bigint, uptime_seconds)
     where id = p_node_id;
@@ -264,6 +265,11 @@ begin
 end $$;
 
 -- ---------- offline detection (called by pg_cron / cron route / dashboard) ---
+-- a node's timezone name if PostgreSQL knows it, else UTC (an unknown name must never break `at time zone`)
+create or replace function public.safe_tz(p text) returns text
+language sql stable security definer set search_path = public, pg_temp
+as $$ select coalesce((select z.name from pg_timezone_names z where z.name = p limit 1), 'UTC') $$;
+
 create or replace function public.evaluate_nodes()
 returns integer
 language plpgsql security definer set search_path = public, pg_temp
@@ -273,7 +279,7 @@ begin
   for r in
     update public.nodes n set
         status = 'offline',
-        status_reason = 'No heartbeat since ' || to_char(n.last_heartbeat_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS "UTC"'),
+        status_reason = 'No heartbeat since ' || to_char(n.last_heartbeat_at at time zone public.safe_tz(n.timezone), 'YYYY-MM-DD HH24:MI:SS') || ' ' || public.safe_tz(n.timezone),
         updated_at = now()
      where n.enabled and n.status <> 'offline' and n.last_heartbeat_at is not null
        and now() - n.last_heartbeat_at > make_interval(secs => n.offline_threshold_seconds)
@@ -332,6 +338,7 @@ revoke all on function public.recompute_node_status(uuid)                       
 revoke all on function public._ingest_one(uuid, jsonb, timestamptz)                from public, anon, authenticated;
 revoke all on function public.ingest_report(uuid, uuid, jsonb)                     from public, anon, authenticated;
 revoke all on function public.evaluate_nodes()                                     from public, anon, authenticated;
+revoke all on function public.safe_tz(text)                                         from public, anon, authenticated;
 revoke all on function public.purge_old_data()                                     from public, anon, authenticated;
 revoke all on function public.metric_series(uuid, text[], timestamptz, timestamptz, integer) from public, anon;
 
@@ -343,5 +350,6 @@ grant execute on function public.recompute_node_status(uuid)                    
 grant execute on function public._ingest_one(uuid, jsonb, timestamptz)             to service_role;
 grant execute on function public.ingest_report(uuid, uuid, jsonb)                  to service_role;
 grant execute on function public.evaluate_nodes()                                  to service_role;
+grant execute on function public.safe_tz(text)                                      to service_role;
 grant execute on function public.purge_old_data()                                  to service_role;
 grant execute on function public.metric_series(uuid, text[], timestamptz, timestamptz, integer) to authenticated, service_role;

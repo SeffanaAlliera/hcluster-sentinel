@@ -276,7 +276,25 @@ class LocalCollector:
         return out
 
 
-def host_info(proc: str = "/proc") -> dict:
+def read_timezone(etc: str = "/etc") -> str | None:
+    """IANA timezone name of this machine (e.g. Asia/Manila), or None if it can't be determined."""
+    try:
+        name = _read(f"{etc}/timezone").strip()
+        if name:
+            return name[:64]
+    except OSError:
+        pass
+    try:
+        target = os.path.realpath(f"{etc}/localtime")
+        if "zoneinfo/" in target:
+            return target.split("zoneinfo/", 1)[1][:64]
+    except OSError:
+        pass
+    tz = os.environ.get("TZ", "").lstrip(":")
+    return tz[:64] if tz and "/" in tz else None
+
+
+def host_info(proc: str = "/proc", etc: str = "/etc") -> dict:
     info: dict = {"hostname": platform.node()[:253], "arch": platform.machine(), "kernel": platform.release()}
     try:
         for line in _read("/etc/os-release").splitlines():
@@ -285,6 +303,9 @@ def host_info(proc: str = "/proc") -> dict:
                 break
     except OSError:
         info["os"] = platform.system()
+    tz = read_timezone(etc)
+    if tz:
+        info["timezone"] = tz
     try:
         model, threads = "", 0
         for line in _read(f"{proc}/cpuinfo").splitlines():

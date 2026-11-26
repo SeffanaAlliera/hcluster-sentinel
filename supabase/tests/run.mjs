@@ -93,11 +93,18 @@ ok((await openInc(N)).length === 0 && (await node(N)).status === 'online', 'mute
 await q("update public.services set enabled=true where node_id=$1 and key='samba'", [N]);
 await ingest(N, C, [report({ collected_at: new Date(Date.now() + 7000).toISOString(), services: [svc('samba', 'operational', { type: 'tcp' })] })]);
 
+console.log('\nnode timezone (display only; detection stays on the server clock)');
+await ingest(N, C, [report({ collected_at: new Date(Date.now() + 7100).toISOString(), host: { timezone: 'Asia/Manila' } })]);
+ok((await node(N)).timezone === 'Asia/Manila', 'agent-reported IANA timezone stored');
+await ingest(N, C, [report({ collected_at: new Date(Date.now() + 7200).toISOString(), host: { timezone: 'Not/AZone' } })]);
+ok((await node(N)).timezone === 'Asia/Manila', 'unknown timezone name ignored (keeps the last valid one)');
+
 console.log('\noffline detection');
 await q("update public.nodes set last_heartbeat_at = now() - interval '10 minutes' where id=$1", [N]);
 ok((await one('select public.evaluate_nodes() as c')).c === 1, 'evaluate_nodes flags 1 node');
 n = await node(N);
 ok(n.status === 'offline', 'stale heartbeat => OFFLINE');
+ok(/^No heartbeat since \d{4}-\d\d-\d\d \d\d:\d\d:\d\d Asia\/Manila$/.test(n.status_reason), 'offline reason is written in the node\'s own timezone: ' + n.status_reason);
 inc = await openInc(N);
 ok(inc.length === 1 && inc[0].kind === 'node_offline', 'node_offline incident opened');
 ok((await one("select count(*)::int c from public.services where node_id=$1 and status='unknown'", [N])).c === 2, 'services UNKNOWN while node silent');

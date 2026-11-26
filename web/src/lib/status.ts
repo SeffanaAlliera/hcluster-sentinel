@@ -2,7 +2,7 @@ export type NodeStatus = 'online' | 'offline' | 'degraded' | 'unknown';
 export type Health = 'operational' | 'degraded' | 'down' | 'unknown';
 
 export interface NodeRow {
-  id: string; hostname: string; display_name: string; os: string | null; arch: string | null; kernel: string | null; cpu_model?: string | null; cpu_cores?: number | null;
+  id: string; hostname: string; display_name: string; os: string | null; arch: string | null; kernel: string | null; cpu_model?: string | null; cpu_cores?: number | null; timezone?: string | null;
   agent_version: string | null; enabled: boolean; status: NodeStatus; status_reason: string | null;
   heartbeat_interval_seconds: number; offline_threshold_seconds: number; last_heartbeat_at: string | null;
   uptime_seconds: number | null; prometheus_status: string; prometheus_error: string | null;
@@ -18,7 +18,7 @@ export interface IncidentRow {
   id: string; node_id: string; service_id: string | null;
   kind: 'node_offline' | 'service_down' | 'prometheus_unavailable' | 'metrics_failure';
   title: string; detail: string | null; started_at: string; resolved_at: string | null; resolved_reason: string | null;
-  nodes?: { display_name: string } | null; services?: { name: string } | null;
+  nodes?: { display_name: string; timezone?: string | null } | null; services?: { name: string } | null;
 }
 
 /** DB status can lag by up to a cron tick; compute the truth from the heartbeat age too. */

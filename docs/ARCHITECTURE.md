@@ -56,3 +56,9 @@ Charts bucket server-side (`metric_series`): 1 h→1 min, 6 h→5 min, 24 h→15
 
 ## Report payload (schema 1)
 `POST /api/agent/report {schema:1,node_id,reports:[{collected_at,agent,host,services[],metrics_report{status,prometheus{…},values[],unavailable[]}}]}` — up to 20 reports per request (offline backlog replay), 256 KB max. Replays are idempotent; out-of-order reports never overwrite newer state.
+
+## Time
+- **Stored** in UTC (`timestamptz`); API JSON is ISO-8601 UTC.
+- **Displayed** in each node's own timezone (reported by the agent, e.g. `Asia/Manila`) with an explicit offset (`UTC+8`), so what the dashboard shows matches the node's logs and `date`. Unknown timezone => UTC.
+- **Sample times** (charts) come from the node clock (`collected_at`), so a backlog replayed after an outage lands where it was measured. Reports older than 24 h are dropped; more than 5 minutes in the future are clamped.
+- **Online/offline decisions** use the server (database) clock on purpose: a node that is down cannot report, and a wrong node clock must never hide an outage or invent one.
