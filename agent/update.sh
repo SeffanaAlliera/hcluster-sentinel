@@ -18,7 +18,9 @@ cp "$SRC/requirements.txt" "$INSTALL_DIR/app/requirements.txt"
 PYTHONPATH="$INSTALL_DIR/app" HCLUSTER_TOKEN=check "$INSTALL_DIR/venv/bin/python" -c 'import hcluster_agent; print("agent version", hcluster_agent.__version__)'
 if [[ "$SKIP_SYSTEMD" != "1" ]]; then
   # never restart into a broken config: validate first and keep the running agent if it is invalid
-  if ! PYTHONPATH="$INSTALL_DIR/app" "$INSTALL_DIR/venv/bin/python" -m hcluster_agent -c "$CONF_DIR/config.yaml" check-config; then
+  # (the token comes from agent.env, exactly as systemd loads it; without it check-config would report "no API token")
+  if ! ( set -a; [[ -r "$CONF_DIR/agent.env" ]] && . "$CONF_DIR/agent.env"; set +a
+         PYTHONPATH="$INSTALL_DIR/app" "$INSTALL_DIR/venv/bin/python" -m hcluster_agent -c "$CONF_DIR/config.yaml" check-config ); then
     echo "" >&2
     echo "NOT restarting: $CONF_DIR/config.yaml has an error (shown above). Fix it, then: sudo systemctl restart hcluster-agent" >&2
     exit 1
