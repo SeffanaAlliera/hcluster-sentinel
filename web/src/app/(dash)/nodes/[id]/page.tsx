@@ -2,7 +2,8 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
 import { requireAdminPage } from '@/lib/auth';
-import { getNode, listIncidents, listServices, metricSeries } from '@/lib/data';
+import { getNode, listIncidentsPage, listServices, metricSeries } from '@/lib/data';
+import { NODE_PREVIEW } from '@/lib/paging';
 import { effectiveNodeStatus } from '@/lib/status';
 import { ago, bytes, duration, fmtTime, pct, tzLabel } from '@/lib/format';
 import { RANGES, parseRange } from '@/lib/validation';
@@ -24,7 +25,7 @@ export default async function NodePage({ params, searchParams }: { params: Promi
   const node = await getNode(supabase, id);
   if (!node) notFound();
   const [services, incidents, ms, latestRes] = await Promise.all([
-    listServices(supabase, id), listIncidents(supabase, { nodeId: id, limit: 30 }), metricSeries(supabase, id, range),
+    listServices(supabase, id), listIncidentsPage(supabase, { nodeId: id, status: 'all', page: 1, pageSize: NODE_PREVIEW }), metricSeries(supabase, id, range),
     supabase.from('node_latest_metrics').select('name,label,value,source,ts').eq('node_id', id),
   ]);
   const latest = (latestRes.data ?? []) as LatestRow[];
@@ -145,7 +146,11 @@ export default async function NodePage({ params, searchParams }: { params: Promi
       </section>
 
       <section><h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Services</h2><div className="card"><ServiceTable rows={services} showNode={false} canEdit /></div></section>
-      <section><h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Incidents</h2><div className="card"><IncidentList items={incidents} showNode={false} /></div></section>
+      <section>
+        <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Latest incidents</h2>
+          {incidents.total > NODE_PREVIEW && <Link href={`/incidents?node=${id}`} className="text-xs text-sky-400 hover:underline">View all {incidents.total} →</Link>}</div>
+        <div className="card"><IncidentList items={incidents.rows} showNode={false} /></div>
+      </section>
 
       <section className="card space-y-3 p-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Node details</h2>

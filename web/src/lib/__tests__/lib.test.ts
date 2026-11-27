@@ -4,6 +4,7 @@ import { agentPayload, nodeCreate, parseRange } from '../validation';
 import { effectiveNodeStatus, effectiveServiceStatus } from '../status';
 import { memoryLimit } from '../ratelimit';
 import { fmtTime, tzLabel, zoneParts } from '../format';
+import { pageCount, pageWindow, parsePage } from '../paging';
 import { drives, nics, pick, seriesKey, worstDrive, type LatestRow } from '../metrics';
 
 const NODE = '11111111-2222-3333-4444-555555555555';
@@ -146,5 +147,21 @@ describe('node-local time display', () => {
   });
   it('accepts the agent-reported timezone', () => {
     expect(agentPayload.parse(base({ host: { timezone: 'Asia/Manila' } })).reports[0].host!.timezone).toBe('Asia/Manila');
+  });
+});
+
+describe('incident paging', () => {
+  it('parsePage only accepts positive integers', () => {
+    expect([undefined, '', 'abc', '0', '-3', '2.5', '1e3', '999999'].map(parsePage)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    expect([parsePage('1'), parsePage('7'), parsePage(['3', '9'])]).toEqual([1, 7, 3]);
+  });
+  it('pageCount is at least 1 and rounds up', () => {
+    expect([pageCount(0, 15), pageCount(15, 15), pageCount(16, 15), pageCount(100, 15)]).toEqual([1, 1, 2, 7]);
+  });
+  it('pageWindow shows first, last and a window with gaps', () => {
+    expect(pageWindow(1, 1)).toEqual([1]);
+    expect(pageWindow(1, 3)).toEqual([1, 2, 3]);
+    expect(pageWindow(10, 20)).toEqual([1, null, 8, 9, 10, 11, 12, null, 20]);
+    expect(pageWindow(2, 20)).toEqual([1, 2, 3, 4, null, 20]);
   });
 });

@@ -47,6 +47,19 @@ export async function listServices(sb: SupabaseClient, nodeId?: string) {
   return (data as unknown as Row[]).map((s) => ({ ...s, node_name: s.nodes.display_name, effective: effectiveServiceStatus(s, effectiveNodeStatus(s.nodes)) }));
 }
 
+/** One page of incidents (newest first) plus the total row count, for the paged incident table. */
+export async function listIncidentsPage(sb: SupabaseClient, opts: { nodeId?: string; status?: 'all' | 'active' | 'resolved'; page: number; pageSize: number }) {
+  const from = (opts.page - 1) * opts.pageSize;
+  let q = sb.from('incidents').select('*, nodes(display_name,timezone), services(name)', { count: 'exact' })
+    .order('started_at', { ascending: false }).range(from, from + opts.pageSize - 1);
+  if (opts.nodeId) q = q.eq('node_id', opts.nodeId);
+  if (opts.status === 'active') q = q.is('resolved_at', null);
+  if (opts.status === 'resolved') q = q.not('resolved_at', 'is', null);
+  const { data, error, count } = await q;
+  if (error) throw error;
+  return { rows: (data ?? []) as unknown as IncidentRow[], total: count ?? 0 };
+}
+
 export async function listIncidents(sb: SupabaseClient, opts: { nodeId?: string; openOnly?: boolean; limit?: number } = {}) {
   let q = sb.from('incidents').select('*, nodes(display_name,timezone), services(name)').order('started_at', { ascending: false }).limit(opts.limit ?? 100);
   if (opts.nodeId) q = q.eq('node_id', opts.nodeId);
